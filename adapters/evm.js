@@ -1,11 +1,13 @@
 // Live EVM adapter using your existing X-Wallet Worker as backend
 
-// In a worker there is no `window`; use a root scope that works in both.
+// Works in both page and worker contexts (no hard dependency on `window`)
 const rootScope = (typeof self !== 'undefined') ? self
                 : (typeof window !== 'undefined') ? window
                 : {};
 
-const API = () => ((rootScope.VisionConfig?.API_BASE) ?? "https://xwalletv1dot2.agedotcom.workers.dev").replace(/\/$/, "");
+const API = () =>
+  ((rootScope.VisionConfig?.API_BASE) ?? "https://xwalletv1dot2.agedotcom.workers.dev")
+    .replace(/\/$/, "");
 
 export const RiskAdapters = {
   evm: {
@@ -39,7 +41,8 @@ export const RiskAdapters = {
       }
       const s = await (await fetch(`${API()}/sanctions?address=${encodeURIComponent(addr)}&network=${network}`)).json();
       const sanctionHits = !!s?.hit;
-      if (txs.length){
+
+      if (txs.length) {
         const heuristic = txs.slice(-100).some(t =>
           /binance|kraken|coinbase|exchange/i.test(`${t.toTag||''}${t.fromTag||''}${t.functionName||''}`)
         );
@@ -98,4 +101,4 @@ export const RiskAdapters = {
   }
 };
 
-window && (window.RiskAdapters = RiskAdapters); // harmless in page context
+// (No global window export — safe in worker & page)
