@@ -1,13 +1,15 @@
 // vision/graph.js
-// Unified Graph API with legacy methods used by app.js
-// Adds setHalo / clearHalos to drive the pulsing halo state.
+// Graph API with SVG rendering + legacy methods + halo helpers.
 
 ///////////////////////
 // Internal state
 ///////////////////////
 const state = {
   container: null,
-  data: { nodes: [], edges: [] },
+  svg: null,
+  gLinks: null,
+  gNodes: null,
+  data: { nodes: [], links: [] },
   listeners: new Map(), // event -> Set<fn>
 };
 
@@ -36,25 +38,58 @@ function ensureContainer(el) {
     state.container =
       document.getElementById('graph') ||
       document.querySelector('[data-role="graph"]') ||
-      document.querySelector('.graph'); // best-effort
+      document.querySelector('.graph');
   }
   return state.container;
 }
 
-// Try a few common attribute patterns to find a node by address
-function findNodeEl(address, container) {
-  if (!address) return null;
-  const a = String(address).toLowerCase();
-  const c = ensureContainer(container);
+function ensureSvg() {
+  const c = ensureContainer(state.container);
   if (!c) return null;
-  return (
-    c.querySelector(`[data-address-i="${a}"]`) ||
-    c.querySelector(`[data-address="${a}"]`)  ||
-    c.querySelector(`[data-id="${a}"]`)       ||
-    c.querySelector(`.node[data-address-i="${a}"]`) ||
-    c.querySelector(`.node[data-address="${a}"]`)    ||
-    c.querySelector(`.node[data-id="${a}"]`)
-  );
+  if (!state.svg) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'vision-graph');
+    svg.setAttribute('width', '100%');
+    svg.setAttribute('height', '100%');
+    const gLinks = document.createElementNS(svg.namespaceURI, 'g');
+    gLinks.setAttribute('class', 'links');
+    const gNodes = document.createElementNS(svg.namespaceURI, 'g');
+    gNodes.setAttribute('class', 'nodes');
+    svg.appendChild(gLinks);
+    svg.appendChild(gNodes);
+    c.innerHTML = '';
+    c.appendChild(svg);
+    state.svg = svg;
+    state.gLinks = gLinks;
+    state.gNodes = gNodes;
+  }
+  return state.svg;
+}
+
+function circleLayout(nodes) {
+  const rect = state.container.getBoundingClientRect();
+  const cx = rect.width / 2, cy = rect.height / 2;
+  const r = Math.max(60, Math.min(cx, cy) - 40);
+  const n = Math.max(1, nodes.length);
+  const centerIdx = 0; // treat first as seed
+  const positions = new Map();
+  // center
+  positions.set(nodes[centerIdx].id, { x: cx, y: cy });
+  // ring
+  const ring = nodes.slice(1);
+  ring.forEach((node, i) => {
+    const a = (2 * Math.PI * i) / ring.length;
+    positions.set(node.id, { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) });
+  });
+  return positions;
+}
+
+function nodeKey(id) { return String(id).toLowerCase(); }
+
+function findNodeEl(address) {
+  if (!address || !state.gNodes) return null;
+  const key = nodeKey(address);
+  return state.gNodes.querySelector(`g[data-address-i="${key}"]`);
 }
 
 ///////////////////////
@@ -87,20 +122,66 @@ export function bandClass(score, blocked) {
 }
 
 ///////////////////////
-// Rendering stubs (no-op but hookable)
+// Rendering
 ///////////////////////
 function render(container, data, opts = {}) {
-  emit('render', { container: ensureContainer(container), data, opts });
+  ensureContainer(container);
+  if (!ensureSvg()) return;
+
+  const { nodes = [], links = [] } = data || {};
+  const pos = circleLayout(nodes);
+
+  // Links
+  state.gLinks.innerHTML = '';
+  for (const l of links) {
+    const a = pos.get(l.a), b = pos.get(l.b);
+    if (!a || !b) continue;
+    const line = document.createElementNS(state.svg.namespaceURI, 'line');
+    line.setAttribute('x1', a.x); line.setAttribute('y1', a.y);
+    line.setAttribute('x2', b.x); line.setAttribute('y2', b.y);
+    line.setAttribute('class', 'edge');
+    state.gLinks.appendChild(line);
+  }
+
+  // Nodes
+  state.gNodes.innerHTML = '';
+  for (const n of nodes) {
+    const p = pos.get(n.id);
+    if (!p) continue;
+    const g = document.createElementNS(state.svg.namespaceURI, 'g');
+    g.setAttribute('class', 'node');
+    g.setAttribute('transform', `translate(${p.x},${p.y})`);
+    g.setAttribute('data-address', n.address || n.id);
+    g.setAttribute('data-address-i', nodeKey(n.address || n.id));
+    g.setAttribute('data-id', nodeKey(n.id));
+
+    const outer = document.createElementNS(state.svg.namespaceURI, 'circle');
+    outer.setAttribute('r', '14'); outer.setAttribute('class', 'node-outer');
+    const inner = document.createElementNS(state.svg.namespaceURI, 'circle');
+    inner.setAttribute('r', '4'); inner.setAttribute('class', 'node-inner');
+
+    g.appendChild(outer); g.appendChild(inner);
+    g.addEventListener('click', () => emit('selectNode', { id: n.id, address: n.address || n.id }));
+    state.gNodes.appendChild(g);
+  }
+
+  emit('render', { container: state.container, data, opts });
 }
+
 function updateStyles(container, result) {
-  emit('restyle', { container: ensureContainer(container), result });
+  // When a result streams in, add halo to the focus node
+  if (!result?.id) return;
+  setHalo(result);
+  emit('restyle', { container: state.container, result });
 }
 
 ///////////////////////
-// Legacy API expected by app.js
+// Legacy / imperative API expected by app.js
 ///////////////////////
 function setContainer(el) {
-  return ensureContainer(el);
+  ensureContainer(el);
+  ensureSvg();
+  return state.container;
 }
 function setData(data) {
   state.data = data || state.data;
@@ -111,46 +192,36 @@ function getData() { return state.data; }
 
 /**
  * setHalo(target, opts?)
- * - target can be: result object with {address, block, risk_score}, OR a plain address string
- * - opts: { blocked?: boolean, container?: HTMLElement }
+ * - target: result with {id/address, block, risk_score} OR a string address
+ * - opts:   { blocked?: boolean }
  */
 function setHalo(target, opts = {}) {
-  const isResult = target && typeof target === 'object' && ('address' in target || 'risk_score' in target || 'block' in target);
-  const address = isResult ? target.address : target;
-  const blocked =
-    (isResult ? (!!target.block || target.risk_score === 100 || target.sanctionHits) : !!opts.blocked);
+  const isObj = target && typeof target === 'object';
+  const idOrAddr = isObj ? (target.address || target.id) : target;
+  const blocked = isObj
+    ? (!!target.block || target.risk_score === 100 || target.sanctionHits)
+    : !!opts.blocked;
 
-  const el = findNodeEl(address, opts.container || state.container);
+  const el = findNodeEl(idOrAddr);
   if (!el) return false;
-
   el.classList.add('halo');
   if (blocked) el.classList.add('halo-red'); else el.classList.remove('halo-red');
   return true;
 }
-
-function clearHalos(container) {
-  const c = ensureContainer(container);
-  if (!c) return;
-  c.querySelectorAll('.halo, .halo-red').forEach(n => {
-    n.classList.remove('halo', 'halo-red');
-  });
+function clearHalos() {
+  if (!state.gNodes) return;
+  state.gNodes.querySelectorAll('.halo,.halo-red').forEach(n => n.classList.remove('halo','halo-red'));
 }
 
 ///////////////////////
 // Export API
 ///////////////////////
 const api = {
-  // legacy/evented
   on, off, setData, getData, setContainer,
-  // halo control
   setHalo, clearHalos,
-  // rendering hooks
   render, updateStyles,
-  // helpers
   nodeClassesFor, bandClass,
 };
 
 export default api;
-
-// Global for existing code using `graph.*`
 try { if (typeof window !== 'undefined') window.graph = api; } catch {}
