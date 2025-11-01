@@ -1,13 +1,41 @@
 // vision/graph.js
-// Clean, extensible Graph API + legacy compatibility.
+// Unified Graph API: modern helpers + legacy methods (on/off/setData)
+// Also exposes window.graph for existing code in app.js.
 
+///////////////////////
+// Internal state
+///////////////////////
+const state = {
+  container: null,
+  data: { nodes: [], edges: [] },
+  listeners: new Map(), // event -> Set<fn>
+};
+
+///////////////////////
+// Event bus
+///////////////////////
+function on(evt, fn) {
+  if (!state.listeners.has(evt)) state.listeners.set(evt, new Set());
+  state.listeners.get(evt).add(fn);
+}
+function off(evt, fn) {
+  const set = state.listeners.get(evt);
+  if (set) set.delete(fn);
+}
+function emit(evt, payload) {
+  const set = state.listeners.get(evt);
+  if (set) for (const fn of set) try { fn(payload); } catch {}
+}
+
+///////////////////////
+// Public helpers you already use
+///////////////////////
 export function nodeClassesFor(result, nodeAddress) {
   const addr  = String(nodeAddress || '').toLowerCase();
   const focus = String(result?.address || '').toLowerCase();
   const base  = ['node'];
 
-  const blocked =
-    !!(result?.block || result?.risk_score === 100 || result?.sanctionHits);
+  const blocked = !!(result?.block || result?.risk_score === 100 || result?.sanctionHits);
 
   if (addr && focus && addr === focus) {
     base.push('halo');
@@ -28,15 +56,51 @@ export function bandClass(score, blocked) {
   return 'band-moderate';
 }
 
-// Stubs you can flesh out later without changing imports:
-export function render(/*container, data, opts*/) {}
-export function updateStyles(/*container, result*/) {}
-export function computeLayout(/*nodes, edges, opts*/) {}
+///////////////////////
+// Rendering stubs (safe no-ops you can flesh out later)
+///////////////////////
+function render(container, data, opts = {}) {
+  // If you already draw elsewhere, keep this as a no-op
+  // Hook point: emit('render', { container, data, opts });
+  emit('render', { container, data, opts });
+}
 
-// Namespaced API (nice dev ergonomics)
-const api = { nodeClassesFor, bandClass, render, updateStyles, computeLayout };
+function updateStyles(container, result) {
+  // Hook point to restyle halos/bands when results update
+  emit('restyle', { container, result });
+}
+
+///////////////////////
+// Legacy API expected by app.js
+///////////////////////
+function setContainer(el) {
+  state.container = el || state.container || (typeof document !== 'undefined' ? document.getElementById('graph') : null);
+  return state.container;
+}
+
+function setData(data) {
+  // Accept {nodes, edges} or any shape your caller passes; store and render
+  state.data = data || state.data;
+  const el = setContainer(state.container);
+  render(el, state.data);
+  emit('data', state.data);
+}
+
+function getData() { return state.data; }
+
+///////////////////////
+// Export API
+///////////////////////
+const api = {
+  // legacy
+  on, off, setData, getData, setContainer,
+  // rendering hooks
+  render, updateStyles,
+  // helpers
+  nodeClassesFor, bandClass,
+};
+
 export default api;
 
-// --- Legacy compatibility ---
-// If other modules still expect a global `graph`, provide it safely.
+// Legacy global so existing code `graph.on(...)` / `graph.setData(...)` works
 try { if (typeof window !== 'undefined') window.graph = api; } catch {}
