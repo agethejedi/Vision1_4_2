@@ -1,4 +1,4 @@
-import { graph } from './graph.js';
+import { nodeClassesFor } from './graph.js';
 
 const worker = new Worker('./workers/visionRisk.worker.js', { type: 'module' });
 
