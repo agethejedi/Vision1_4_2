@@ -1,6 +1,7 @@
-import './ui/ScoreMeter.js?v=2025-11-02';
-import './graph.js?v=2025-11-02';
+import './ui/ScoreMeter.js?v=2025-11-02';     // provides window.ScoreMeter(...)
+import './graph.js?v=2025-11-02';             // provides window.graph (on/setData/setHalo)
 
+// --- Worker plumbing -------------------------------------------------------
 const worker = new Worker('./workers/visionRisk.worker.js', { type: 'module' });
 
 const pending = new Map();
@@ -15,24 +16,34 @@ function post(type, payload) {
 worker.onmessage = (e) => {
   const { id, type, data, error } = e.data || {};
   const req = pending.get(id);
-  if (type === 'INIT_OK') { if (req) { req.resolve(true); pending.delete(id); } return; }
+
+  if (type === 'INIT_OK') {
+    if (req) { req.resolve(true); pending.delete(id); }
+    return;
+  }
+
   if (type === 'RESULT_STREAM') {
-    drawHalo(data);
-    if (data.id === selectedNodeId) updateScorePanel(data);
-    updateBatchStatus(`Scored: ${data.id.slice(0,8)}… → ${data.score}`);
+    const r = normalizeResult(data);
+    drawHalo(r);
+    if (r.id === selectedNodeId) updateScorePanel(r);
+    updateBatchStatus(`Scored: ${r.id.slice(0,8)}… → ${r.score}`);
     return;
   }
+
   if (type === 'RESULT') {
-    drawHalo(data);
-    if (data.id === selectedNodeId) updateScorePanel(data);
-    if (req) { req.resolve(data); pending.delete(id); }
+    const r = normalizeResult(data);
+    drawHalo(r);
+    if (r.id === selectedNodeId) updateScorePanel(r);
+    if (req) { req.resolve(r); pending.delete(id); }
     return;
   }
+
   if (type === 'DONE') {
     if (req) { req.resolve(true); pending.delete(id); }
     updateBatchStatus('Batch: complete');
     return;
   }
+
   if (type === 'ERROR') {
     console.error(error);
     if (req) { req.reject(new Error(error)); pending.delete(id); }
@@ -40,9 +51,31 @@ worker.onmessage = (e) => {
   }
 };
 
+// Normalize worker result → trust server-side policy if present
+function normalizeResult(res = {}) {
+  // Score: prefer server risk_score (100 on OFAC), else fallback to res.score
+  const serverScore = (typeof res.risk_score === 'number') ? res.risk_score : null;
+  const score = (serverScore != null) ? serverScore : (typeof res.score === 'number' ? res.score : 0);
+
+  // Blocked if server says block, or risk_score=100, or explicit sanction hit
+  const blocked = !!(res.block || serverScore === 100 || res.sanctionHits);
+
+  const explain = {
+    reasons: res.reasons || res.risk_factors || [],
+    blocked,
+  };
+
+  return {
+    ...res,
+    score,
+    explain,
+    block: blocked,
+  };
+}
+
+// --- Init ------------------------------------------------------------------
 async function init() {
   await post('INIT', {
-    // pass API base as a plain string so worker can use it (workers don't have window)
     apiBase: (window.VisionConfig && window.VisionConfig.API_BASE) || "",
     cache: window.RiskCache,
     network: getNetwork(),
@@ -56,41 +89,55 @@ async function init() {
 }
 init();
 
+// --- UI wiring -------------------------------------------------------------
 function bindUI() {
-  document.getElementById('refreshBtn').addEventListener('click', () => {
+  document.getElementById('refreshBtn')?.addEventListener('click', () => {
     scoreVisible();
   });
-  document.getElementById('clearBtn').addEventListener('click', () => {
-    graph.setData({ nodes: [], links: [] });
-    updateBatchStatus('Idle'); setSelected(null);
+
+  document.getElementById('clearBtn')?.addEventListener('click', () => {
+    window.graph?.setData({ nodes: [], links: [] });
+    updateBatchStatus('Idle');
+    setSelected(null);
   });
-  document.getElementById('loadSeedBtn').addEventListener('click', () => {
+
+  document.getElementById('loadSeedBtn')?.addEventListener('click', () => {
     const seed = document.getElementById('seedInput').value.trim();
     if (!seed) return;
     loadSeed(seed);
   });
-  document.getElementById('networkSelect').addEventListener('change', async () => {
+
+  document.getElementById('networkSelect')?.addEventListener('change', async () => {
     await post('INIT', { network: getNetwork() });
     scoreVisible();
   });
 
-  graph.on('selectNode', (n) => {
+  // If your graph module emits 'selectNode', keep this
+  window.graph?.on('selectNode', (n) => {
     if (!n) return;
     setSelected(n.id);
     post('SCORE_ONE', { item: { type: 'address', id: n.id, network: getNetwork() } })
-      .then(updateScorePanel)
+      .then(r => updateScorePanel(normalizeResult(r)))
       .catch(() => {});
   });
 }
 
-function getNetwork() { return document.getElementById('networkSelect').value; }
+function getNetwork() {
+  return document.getElementById('networkSelect')?.value || 'eth';
+}
 
 let selectedNodeId = null;
 function setSelected(id) { selectedNodeId = id; }
 
+// Score panel instance (imperative API from ScoreMeter drop-in)
+const scorePanel = (window.ScoreMeter && window.ScoreMeter('#scorePanel')) || {
+  setSummary(){}, setScore(){}, setBlocked(){}, setReasons(){}, getScore(){ return 0; }
+};
+
 function updateScorePanel(res) {
-  const sp = document.getElementById('scorePanel');
-  sp.setScore(res.score, res.explain);
+  // Preferred single call (handles score, blocked, reasons)
+  scorePanel.setSummary(res);
+
   const feats = res.feats || {};
   document.getElementById('entityMeta').innerHTML = `
     <div>Address: <b>${res.id}</b></div>
@@ -101,17 +148,26 @@ function updateScorePanel(res) {
   `;
 }
 
+// Halo coloring + intensity; pass whole result so blocked=red is automatic
 function drawHalo(res) {
-  const color = res.score >= 80 ? '#ff3b3b'
-             : res.score >= 60 ? '#ffb020'
-             : res.score >= 40 ? '#ffc857'
-             : res.score >= 20 ? '#22d37b'
-             : '#00eec3';
-  graph.setHalo(res.id, { intensity: res.score / 100, color, tooltip: res.label });
+  // If you want “blocked = always red” use graph.setHalo(res) directly:
+  window.graph?.setHalo(res);
+
+  // If you still want custom ring color by score for non-blocked cases, you can keep this:
+  // const color = res.score >= 80 ? '#ff3b3b'
+  //            : res.score >= 60 ? '#ffb020'
+  //            : res.score >= 40 ? '#ffc857'
+  //            : res.score >= 20 ? '#22d37b'
+  //            : '#00eec3';
+  // window.graph?.setHalo(res.id, { intensity: res.score / 100, color, tooltip: res.label });
 }
 
-function updateBatchStatus(text) { document.getElementById('batchStatus').textContent = text; }
+function updateBatchStatus(text) {
+  const el = document.getElementById('batchStatus');
+  if (el) el.textContent = text;
+}
 
+// --- Scoring pipeline ------------------------------------------------------
 function scoreVisible() {
   const viewNodes = getVisibleNodes();
   if (!viewNodes.length) { updateBatchStatus('No nodes in view'); return; }
@@ -120,11 +176,13 @@ function scoreVisible() {
   post('SCORE_BATCH', { items }).catch(err => console.error(err));
 }
 
+// Replace this with your real graph viewport nodes when ready
 function getVisibleNodes() {
   const sample = window.__VISION_NODES__ || [];
   return sample;
 }
 
+// --- Demo seed graph -------------------------------------------------------
 function seedDemo() {
   const seed = '0xDEMOSEED00000000000000000000000000000001';
   loadSeed(seed);
@@ -139,7 +197,7 @@ function loadSeed(seed) {
   }
   nodes.unshift({ id: seed, address: seed, network: getNetwork() });
   window.__VISION_NODES__ = nodes;
-  graph.setData({ nodes, links });
+  window.graph?.setData({ nodes, links });
   setSelected(seed);
   scoreVisible();
 }
