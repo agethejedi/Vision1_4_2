@@ -135,46 +135,22 @@ const scorePanel = (window.ScoreMeter && window.ScoreMeter('#scorePanel')) || {
 };
 
 function updateScorePanel(res) {
-  // Always show numeric score; ring/halo color indicates blocked
-  res.parity = (typeof res.parity === 'string' || res.parity === true) ? res.parity : 'SafeSend parity';
+  // Ensure SafeSend badge
+  res.parity = (typeof res.parity === 'string' || res.parity === true)
+    ? res.parity
+    : 'SafeSend parity';
 
-  // Prefer dynamic breakdown from worker; otherwise derive from reasons with weights
-  if (!Array.isArray(res.breakdown) || res.breakdown.length === 0) {
-    const map = {
-      'OFAC': 40, 'OFAC/sanctions list match': 40, 'sanctioned Counterparty': 40,
-      'fan In High': 9, 'shortest Path To Sanctioned': 6,
-      'burst Anomaly': 0, 'known Mixer Proximity': 0,
-    };
-    const r = res.reasons || res.risk_factors || [];
-    res.breakdown = r.map(x => ({ label: String(x), delta: map[x] ?? 0 }))
-                     .sort((a,b)=>b.delta-a.delta);
-  }
-
-  // Push to the meter card
-  scorePanel.setSummary(res);
-
-  // ---- Meta panel: Age in years + months (rounded to nearest month) ----
+  // ----- AGE (convert from days → years + months) -----
   const feats = res.feats || {};
   const ageDays = Number(feats.ageDays ?? 0);
   let ageDisplay = '—';
   if (ageDays > 0) {
-    const totalMonths = Math.round(ageDays / 30.44); // nearest month
-    const years  = Math.floor(totalMonths / 12);
+    const totalMonths = Math.round(ageDays / 30.44); // 30.44 = average days per month
+    const years = Math.floor(totalMonths / 12);
     const months = totalMonths % 12;
-    ageDisplay = years > 0 ? (months > 0 ? `${years}y ${months}m` : `${years}y`) : `${months}m`;
-  }
-
-  const mixerPct = Math.round((feats.mixerTaint ?? 0) * 100) + '%';
-  const neighPct = Math.round((feats.local?.riskyNeighborRatio ?? 0) * 100) + '%';
-
-  document.getElementById('entityMeta').innerHTML = `
-    <div>Address: <b>${res.id}</b></div>
-    <div>Network: <b>${res.network}</b></div>
-    <div>Age: <b>${ageDisplay}</b></div>
-    <div>Mixer taint: <b>${mixerPct}</b></div>
-    <div>Neighbors flagged: <b>${neighPct}</b></div>
-  `;
-}
+    if (years > 0 && months > 0) ageDisplay = `${years}y ${months}m`;
+    else if (years > 0) ageDisplay = `${years}y`;
+    else ageDisplay = `${months}m`;
   }
 
   // ----- Inject default factor weights if none provided -----
