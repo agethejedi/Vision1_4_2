@@ -192,6 +192,40 @@ function buildGraphControls(){
   document.head.appendChild(st);
 }
 
+async function getNeighborsLive(centerId){
+  try {
+    const res = await post('NEIGHBORS', { id: centerId, network: getNetwork(), hop: 1, limit: 250 });
+    if (res && Array.isArray(res.nodes) && Array.isArray(res.links)) return res;
+  } catch {}
+  return { nodes: [], links: [] };
+}
+
+async function refreshGraphFromLive(centerId){
+  const { nodes, links } = await getNeighborsLive(centerId);
+  if (!nodes.length && !links.length) return;
+
+  const center = { id: normId(centerId), address: normId(centerId), network: getNetwork() };
+  const nn = nodes.map(n => ({ ...n, id: normId(n.id || n.address) }));
+  const ll = links.map(L => ({ a: normId(L.a || L.source || L.idA), b: normId(L.b || L.target || L.idB), weight: L.weight || 1 }));
+
+  let haveCenter = nn.some(n => n.id === center.id);
+  const finalNodes = haveCenter ? nn : [center, ...nn];
+
+  const knownNeighbors = new Set();
+  for (const L of ll) { if (L.a === center.id) knownNeighbors.add(L.b); if (L.b === center.id) knownNeighbors.add(L.a); }
+  for (const n of nn) { if (!knownNeighbors.has(n.id)) ll.push({ a: center.id, b: n.id, weight: 1 }); }
+
+  setGraphData({ nodes: finalNodes, links: ll });
+
+  for (const n of finalNodes) { if (n.id !== center.id) window.graph?.setHalo({ id: n.id, color:'#22d37b', intensity:.5 }); }
+  window.graph?.setHalo({ id: center.id, intensity:.9 });
+}
+
+// expose for handlers & console
+window.refreshGraphFromLive = refreshGraphFromLive;
+window.getNeighborsLive     = getNeighborsLive;
+
+
 /* ============== Focus / navigate ============== */
 async function focusAddress(addr, opts = {}){
   const id = normId(addr);
@@ -210,9 +244,10 @@ async function focusAddress(addr, opts = {}){
 
   // ensure a single-node canvas before loading neighbors
   setGraphData({ nodes:[{ id, address:id, network:getNetwork() }], links:[] });
-  await refreshGraphFromLive(id);   // <-- this function is defined below now
-  window.graph?.centerOn(id, { animate:true });
-  window.graph?.zoomFit();
+if (typeof window.refreshGraphFromLive === 'function') {
+  await window.refreshGraphFromLive(id);
+} else {
+  console.warn('refreshGraphFromLive not available yet');
 }
 
 /* ============== Tooltip ============== */
