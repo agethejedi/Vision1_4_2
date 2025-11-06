@@ -1,44 +1,54 @@
-// graph.js — Vision graph renderer (vanilla SVG, radial layout + zoom/pan)
-(function(){
+// graph.js — Vision graph renderer (safe syntax)
+// Radial layout + zoom/pan + fit/reset + select/hover events + halos + label toggle.
+
+(function () {
   const api = {};
   const listeners = {};
-  function emit(evt, payload){ (listeners[evt]||[]).forEach(fn => { try{fn(payload);}catch{} }); }
-  api.on = (evt, fn) => { (listeners[evt] ||= []).push(fn); return api; };
+  function on(evt, fn) { (listeners[evt] || (listeners[evt] = [])).push(fn); return api; }
+  function emit(evt, payload) { (listeners[evt] || []).forEach(fn => { try { fn(payload); } catch (e) {} }); }
+  api.on = on;
 
   const host = document.getElementById('graph');
   const svgNS = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(svgNS, 'svg');
   svg.setAttribute('class', 'vision-graph');
-  svg.setAttribute('width', '100%'); svg.setAttribute('height', '100%');
+  svg.setAttribute('width', '100%');
+  svg.setAttribute('height', '100%');
   host.appendChild(svg);
 
-  const gRoot  = document.createElementNS(svgNS, 'g'); svg.appendChild(gRoot);
+  const gRoot = document.createElementNS(svgNS, 'g'); svg.appendChild(gRoot);
   const gEdges = document.createElementNS(svgNS, 'g'); gRoot.appendChild(gEdges);
   const gNodes = document.createElementNS(svgNS, 'g'); gRoot.appendChild(gNodes);
 
-  let data = { nodes:[], links:[] };
-  let nodeIndex = new Map();
-  let halos = new Map();
-  let showLabels = true;
+  var data = { nodes: [], links: [] };
+  var halos = new Map();
+  var showLabels = true;
 
-  /* ===== Zoom/Pan ===== */
-  let scale = 1, tx = 0, ty = 0;
-  let dragging = false, lastX=0, lastY=0;
-  function applyTransform(){ gRoot.setAttribute('transform', `translate(${tx},${ty}) scale(${scale})`); }
-  host.addEventListener('wheel', (e)=>{
+  /* ---------- Zoom / Pan ---------- */
+  var scale = 1, tx = 0, ty = 0;
+  var dragging = false, lastX = 0, lastY = 0;
+
+  function applyTransform() {
+    gRoot.setAttribute('transform', 'translate(' + tx + ',' + ty + ') scale(' + scale + ')');
+  }
+
+  host.addEventListener('wheel', function (e) {
     e.preventDefault();
-    const rect = svg.getBoundingClientRect();
-    const cx = (e.clientX - rect.left - tx)/scale;
-    const cy = (e.clientY - rect.top  - ty)/scale;
-    const k  = (e.deltaY < 0 ? 1.1 : 0.9);
+    var rect = svg.getBoundingClientRect();
+    var cx = (e.clientX - rect.left - tx) / scale;
+    var cy = (e.clientY - rect.top - ty) / scale;
+    var k = (e.deltaY < 0 ? 1.1 : 0.9);
     scale *= k;
-    tx = e.clientX - rect.left - cx*scale;
-    ty = e.clientY - rect.top  - cy*scale;
+    tx = e.clientX - rect.left - cx * scale;
+    ty = e.clientY - rect.top - cy * scale;
     applyTransform();
-  }, { passive:false });
-  host.addEventListener('mousedown', (e)=>{ dragging=true; lastX=e.clientX; lastY=e.clientY; });
-  window.addEventListener('mouseup', ()=> dragging=false);
-  window.addEventListener('mousemove', (e)=>{
+  }, { passive: false });
+
+  host.addEventListener('mousedown', function (e) {
+    dragging = true; lastX = e.clientX; lastY = e.clientY;
+  });
+  window.addEventListener('mouseup', function () { dragging = false; });
+  window.addEventListener('mousemove', function (e) {
     if (!dragging) return;
     tx += (e.clientX - lastX);
     ty += (e.clientY - lastY);
@@ -46,165 +56,176 @@
     applyTransform();
   });
 
-  api.zoomFit = function(){
-    const rect = svg.getBoundingClientRect();
-    const bbox = gRoot.getBBox ? gRoot.getBBox() : { x:0, y:0, width:1, height:1 };
+  api.zoomFit = function () {
+    var rect = svg.getBoundingClientRect();
+    var bbox = gRoot.getBBox ? gRoot.getBBox() : { x: 0, y: 0, width: 1, height: 1 };
     if (!bbox.width || !bbox.height) return;
-    const pad = 40;
-    const sx = (rect.width - pad) / bbox.width;
-    const sy = (rect.height - pad) / bbox.height;
+    var pad = 40;
+    var sx = (rect.width - pad) / bbox.width;
+    var sy = (rect.height - pad) / bbox.height;
     scale = Math.max(0.1, Math.min(4, Math.min(sx, sy)));
-    tx = (rect.width - bbox.width*scale)/2 - bbox.x*scale;
-    ty = (rect.height - bbox.height*scale)/2 - bbox.y*scale;
+    tx = (rect.width - bbox.width * scale) / 2 - bbox.x * scale;
+    ty = (rect.height - bbox.height * scale) / 2 - bbox.y * scale;
     applyTransform();
   };
-  api.resetView = function(){ scale = 1; tx = ty = 0; applyTransform(); };
+  api.resetView = function () { scale = 1; tx = 0; ty = 0; applyTransform(); };
 
-  /* ===== Data/Render ===== */
-  api.setData = function(newData){
-    const nodes = Array.isArray(newData?.nodes) ? newData.nodes : [];
-    const links = Array.isArray(newData?.links) ? newData.links : [];
-    data = { nodes, links };
-    nodeIndex = new Map(nodes.map(n => [String(n.id).toLowerCase(), n]));
+  /* ---------- Data / Render ---------- */
+  api.setData = function (newData) {
+    var nodes = Array.isArray(newData && newData.nodes) ? newData.nodes : [];
+    var links = Array.isArray(newData && newData.links) ? newData.links : [];
+    data = { nodes: nodes, links: links };
     render();
     emit('dataChanged');
   };
-  api.getData = () => data;
+  api.getData = function () { return data; };
 
-  function render(){
-    // layout: center = first node; others around circle
-    const rect = svg.getBoundingClientRect();
-    const cx = rect.width/2, cy = rect.height/2;
-    const center = data.nodes[0];
-    const N = Math.max(0, data.nodes.length - 1);
-    const R = Math.min(rect.width, rect.height) * 0.28;
+  function shortId(id) {
+    var s = String(id || '');
+    return s.slice(0, 6) + '…' + s.slice(-4);
+  }
 
-    // node coordinates
-    const pos = new Map();
-    if (center) { pos.set(center.id, { x: cx, y: cy }); }
-    for (let i=1; i<data.nodes.length; i++){
-      const n = data.nodes[i];
-      const theta = (i-1) / Math.max(1, N) * Math.PI*2;
-      const x = cx + R * Math.cos(theta);
-      const y = cy + R * Math.sin(theta);
-      pos.set(n.id, { x, y });
+  function render() {
+    var rect = svg.getBoundingClientRect();
+    var cx = rect.width / 2, cy = rect.height / 2;
+    var center = data.nodes[0];
+    var N = Math.max(0, data.nodes.length - 1);
+    var R = Math.min(rect.width, rect.height) * 0.28;
+
+    var pos = {};
+    if (center) pos[center.id] = { x: cx, y: cy };
+    for (var i = 1; i < data.nodes.length; i++) {
+      var n = data.nodes[i];
+      var theta = (i - 1) / Math.max(1, N) * Math.PI * 2;
+      var x = cx + R * Math.cos(theta);
+      var y = cy + R * Math.sin(theta);
+      pos[n.id] = { x: x, y: y };
     }
 
     // edges
     gEdges.innerHTML = '';
-    for (const L of data.links){
-      const a = pos.get(L.a); const b = pos.get(L.b);
-      if (!a || !b) continue;
-      const line = document.createElementNS(svgNS, 'line');
-      line.setAttribute('x1', a.x); line.setAttribute('y1', a.y);
-      line.setAttribute('x2', b.x); line.setAttribute('y2', b.y);
+    for (var j = 0; j < data.links.length; j++) {
+      var L = data.links[j];
+      var pa = pos[L.a], pb = pos[L.b];
+      if (!pa || !pb) continue;
+      var line = document.createElementNS(svgNS, 'line');
+      line.setAttribute('x1', pa.x); line.setAttribute('y1', pa.y);
+      line.setAttribute('x2', pb.x); line.setAttribute('y2', pb.y);
       line.setAttribute('class', 'edge');
-      const w = Number(L.weight || 1);
-      line.setAttribute('stroke-width', String( Math.max(1, Math.log2(1+w)+0.5) ));
+      var w = Number(L.weight || 1);
+      var sw = Math.max(1, Math.log(w + 1) + 0.5);
+      line.setAttribute('stroke-width', String(sw));
       gEdges.appendChild(line);
     }
 
     // nodes
     gNodes.innerHTML = '';
-    for (const n of data.nodes){
-      const p = pos.get(n.id) || { x:cx, y:cy };
-      const g = document.createElementNS(svgNS, 'g');
-      g.setAttribute('transform', `translate(${p.x},${p.y})`);
-      g.setAttribute('data-id', n.id);
+    for (var k = 0; k < data.nodes.length; k++) {
+      var nd = data.nodes[k];
+      var p = pos[nd.id] || { x: cx, y: cy };
+      var gg = document.createElementNS(svgNS, 'g');
+      gg.setAttribute('transform', 'translate(' + p.x + ',' + p.y + ')');
+      gg.setAttribute('data-id', String(nd.id));
 
-      const outer = document.createElementNS(svgNS, 'circle');
+      var outer = document.createElementNS(svgNS, 'circle');
       outer.setAttribute('r', 11);
       outer.setAttribute('class', 'node-outer');
-      g.appendChild(outer);
+      gg.appendChild(outer);
 
-      const inner = document.createElementNS(svgNS, 'circle');
+      var inner = document.createElementNS(svgNS, 'circle');
       inner.setAttribute('r', 5.5);
       inner.setAttribute('class', 'node-inner');
-      g.appendChild(inner);
+      gg.appendChild(inner);
 
-      if (showLabels && data.nodes.length <= (window.__SHOW_LABELS_BELOW__||150)) {
-        const text = document.createElementNS(svgNS, 'text');
+      // label (respect global threshold)
+      var threshold = window.__SHOW_LABELS_BELOW__ || 150;
+      if (showLabels && data.nodes.length <= threshold) {
+        var text = document.createElementNS(svgNS, 'text');
         text.setAttribute('y', -16);
         text.setAttribute('text-anchor', 'middle');
         text.setAttribute('style', 'fill:#8aa3a0; font-size:10px;');
-        const id = String(n.id);
-        text.textContent = id.slice(0,6)+'…'+id.slice(-4);
-        g.appendChild(text);
+        text.textContent = shortId(nd.id);
+        gg.appendChild(text);
       }
 
       // events
-      g.addEventListener('click', () => emit('selectNode', { id:n.id }));
-      g.addEventListener('mouseenter', (evt) => {
-        const pt = svg.createSVGPoint(); pt.x = p.x; pt.y = p.y;
-        const screen = svg.getBoundingClientRect();
-        emit('hoverNode', { id:n.id, __px: p.x*scale + tx, __py: p.y*scale + ty, screen });
-      });
-      g.addEventListener('mouseleave', () => emit('hoverNode', null));
+      (function bindEvents(nodeId, px, py) {
+        gg.addEventListener('click', function () { emit('selectNode', { id: nodeId }); });
+        gg.addEventListener('mouseenter', function () {
+          emit('hoverNode', { id: nodeId, __px: px * scale + tx, __py: py * scale + ty });
+        });
+        gg.addEventListener('mouseleave', function () { emit('hoverNode', null); });
+      })(String(nd.id), p.x, p.y);
 
-      gNodes.appendChild(g);
+      gNodes.appendChild(gg);
     }
 
-    // re-apply halos
-    halos.forEach((v, id) => applyHaloVisual(id, v));
+    // reapply halos
+    halos.forEach(function (opts, id) { applyHaloVisual(id, opts); });
   }
 
-  /* ===== Halos ===== */
-  function applyHaloVisual(id, opts){
-    const g = gNodes.querySelector(`g[data-id="${CSS.escape(id)}"]`);
+  /* ---------- Halos ---------- */
+  function findNodeGroup(id) {
+    // Avoid CSS.escape; simple scan
+    var list = gNodes.querySelectorAll('g[data-id]');
+    for (var i = 0; i < list.length; i++) {
+      if (String(list[i].getAttribute('data-id')).toLowerCase() === String(id).toLowerCase()) {
+        return list[i];
+      }
+    }
+    return null;
+  }
+
+  function applyHaloVisual(id, opts) {
+    var g = findNodeGroup(id);
     if (!g) return;
-    // toggle halo/red classes; color via inline stroke on .node-outer
-    g.classList.toggle('halo', true);
-    g.classList.toggle('halo-red', !!opts.blocked);
-    const outer = g.querySelector('.node-outer');
-    if (outer && opts.color) outer.style.stroke = opts.color;
+    g.classList.add('halo');
+    if (opts && opts.blocked) g.classList.add('halo-red'); else g.classList.remove('halo-red');
+    var outer = g.querySelector('.node-outer');
+    if (outer && opts && opts.color) outer.style.stroke = opts.color;
   }
 
-  api.setHalo = function(info){
+  api.setHalo = function (info) {
     if (!info || !info.id) return;
     halos.set(info.id, info);
     applyHaloVisual(info.id, info);
   };
 
-  api.flashHalo = function(id){
-    const g = gNodes.querySelector(`g[data-id="${CSS.escape(id)}"]`);
+  api.flashHalo = function (id) {
+    var g = findNodeGroup(id);
     if (!g) return;
     g.classList.add('halo');
     g.classList.add('halo-flash');
-    setTimeout(()=> g.classList.remove('halo-flash'), 450);
+    setTimeout(function () { g.classList.remove('halo-flash'); }, 450);
   };
 
-  /* ===== Center / Fit ===== */
-  api.centerOn = function(id, { animate=false } = {}){
+  /* ---------- Center / Fit / Labels ---------- */
+  api.centerOn = function (id, opts) {
+    opts = opts || {};
     if (!data.nodes.length) return;
-    const idx = data.nodes.findIndex(n => String(n.id).toLowerCase() === String(id).toLowerCase());
+    var idx = -1;
+    for (var i = 0; i < data.nodes.length; i++) {
+      if (String(data.nodes[i].id).toLowerCase() === String(id).toLowerCase()) { idx = i; break; }
+    }
     if (idx <= 0) return; // already center or not found
-    const [node] = data.nodes.splice(idx, 1);
+    var node = data.nodes.splice(idx, 1)[0];
     data.nodes.unshift(node);
-    if (animate){
-      // small fade to hide jump
+    if (opts.animate) {
       svg.style.transition = 'opacity .18s ease';
       svg.style.opacity = '0.4';
-      requestAnimationFrame(()=>{ render(); api.zoomFit(); svg.style.opacity = '1'; setTimeout(()=> svg.style.transition=''; }, 200); });
+      requestAnimationFrame(function () {
+        render(); api.zoomFit(); svg.style.opacity = '1'; setTimeout(function () { svg.style.transition = ''; }, 200);
+      });
     } else { render(); }
     emit('dataChanged');
   };
 
-  api.setLabelVisibility = function(visible){
+  api.setLabelVisibility = function (visible) {
     showLabels = !!visible;
     render();
   };
 
-  api.getNodeCenterPx = function(id){
-    const rect = svg.getBoundingClientRect();
-    const node = gNodes.querySelector(`g[data-id="${CSS.escape(id)}"]`);
-    if (!node) return null;
-    const m = node.getCTM();
-    const px = m.e*scale + tx;
-    const py = m.f*scale + ty;
-    return { x:px, y:py, rect };
-  };
-
-  // expose
+  /* ---------- Export API ---------- */
   window.graph = api;
 
 })();
