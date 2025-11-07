@@ -1,4 +1,4 @@
-// app.js — Vision 1_4_2b (history + toolbar + narrative present)
+// app.js — Vision 1_4_2c (Narrative: neighbor stats + factor rows)
 import './ui/ScoreMeter.js?v=2025-11-02';
 import './graph.js?v=2025-11-05';
 
@@ -20,7 +20,7 @@ function post(type, payload){
   });
 }
 
-/* ---------------- state ---------------- */
+/* ---------------- state & utils ---------------- */
 function getNetwork(){ return document.getElementById('networkSelect')?.value || 'eth'; }
 function norm(x){ return String(x||'').toLowerCase(); }
 function clamp(x,a=0,b=1){ return Math.max(a, Math.min(b, x)); }
@@ -31,36 +31,23 @@ function updateBatchStatus(t){ const el=document.getElementById('batchStatus'); 
 
 const scoreCache = new Map();
 const neighborStats = new Map();
-function keyFor(a){ return `${getNetwork()}:${norm(a)}`; }
-function putScore(r){ scoreCache.set(keyFor(r.id), r); }
-function getScore(a){ return scoreCache.get(keyFor(a)); }
-function setNeighborStats(a,s){ neighborStats.set(keyFor(a), s); }
-function getNeighborStats(a){ return neighborStats.get(keyFor(a)); }
+const k = (a)=> `${getNetwork()}:${norm(a)}`;
+const setScore = (r)=> scoreCache.set(k(r.id), r);
+const getScore = (a)=> scoreCache.get(k(a));
+const setNS = (id,s)=> neighborStats.set(k(id), s);
+const getNS = (id)=> neighborStats.get(k(id));
 
 let selectedNodeId = null;
 function setSelected(id){ selectedNodeId = norm(id); }
 
 /* ----------- history (Back/Forward) ----------- */
-let navStack = [];     // array of ids
-let navIndex = -1;     // current pointer
-
-function pushHistory(id){
-  // trim forward tail when navigating to a new node
-  if (navIndex < navStack.length - 1) navStack = navStack.slice(0, navIndex + 1);
-  if (navStack[navStack.length - 1] !== id) navStack.push(id);
-  navIndex = navStack.length - 1;
-  updateNavButtons();
-}
-function canBack(){ return navIndex > 0; }
-function canFwd(){ return navIndex >= 0 && navIndex < navStack.length - 1; }
-function navBack(){ if (!canBack()) return; const id = navStack[--navIndex]; focusAddress(id, { push:false }); updateNavButtons(); }
-function navForward(){ if (!canFwd()) return; const id = navStack[++navIndex]; focusAddress(id, { push:false }); updateNavButtons(); }
-function updateNavButtons(){
-  const b = document.getElementById('btnBack');
-  const f = document.getElementById('btnFwd');
-  if (b) b.disabled = !canBack();
-  if (f) f.disabled = !canFwd();
-}
+let navStack = []; let navIndex = -1;
+function pushHistory(id){ if (navIndex < navStack.length-1) navStack = navStack.slice(0,navIndex+1); if (navStack.at(-1)!==id) navStack.push(id); navIndex = navStack.length-1; updateNavButtons(); }
+const canBack = ()=> navIndex>0;
+const canFwd  = ()=> navIndex>=0 && navIndex<navStack.length-1;
+function navBack(){ if(!canBack()) return; const id=navStack[--navIndex]; focusAddress(id,{push:false}); updateNavButtons(); }
+function navForward(){ if(!canFwd()) return; const id=navStack[++navIndex]; focusAddress(id,{push:false}); updateNavButtons(); }
+function updateNavButtons(){ const b=document.getElementById('btnBack'); const f=document.getElementById('btnFwd'); if(b) b.disabled=!canBack(); if(f) f.disabled=!canFwd(); }
 
 /* ----------- worker plumbing ----------- */
 worker.onmessage = (e) => {
@@ -85,8 +72,8 @@ worker.onmessage = (e) => {
   }
 
   if (type === 'NEIGHBOR_STATS'){
-    if (data?.id){ setNeighborStats(data.id, data); if (selectedNodeId === data.id){ const cached=getScore(data.id); if (cached) afterScore(normalizeResult(cached), { force:true }); } }
-    setGraphStatus(formatNeighborStatusLine(data));
+    if (data?.id){ setNS(data.id, data); if (selectedNodeId === data.id){ const cached=getScore(data.id); if (cached) afterScore(normalizeResult(cached), { force:true }); } }
+    setGraphStatus(formatNSLine(data));
     return;
   }
 
@@ -104,9 +91,9 @@ function normalizeResult(res={}){
   const explain = res.explain && typeof res.explain==='object' ? { ...res.explain } : { reasons: res.reasons || res.risk_factors || [] };
   coerceOfacFlag(explain, res);
   if (typeof explain.walletAgeRisk!=='number'){ const d=Number(res.feats?.ageDays ?? NaN); if(!Number.isNaN(d)&&d>=0) explain.walletAgeRisk = clamp(1 - Math.min(1, d/(365*2))); }
-  const ns = getNeighborStats(id);
+  const ns = getNS(id);
   if (ns){
-    explain.neighborsDormant = { inactiveRatio: ns.inactiveRatio, n: ns.n, avgInactiveAge: ns.avgInactiveAge ?? null };
+    explain.neighborsDormant   = { inactiveRatio: ns.inactiveRatio, n: ns.n, avgInactiveAge: ns.avgInactiveAge ?? null };
     if (ns.avgTx!=null)  explain.neighborsAvgTxCount = { avgTx: ns.avgTx, n: ns.n };
     if (ns.avgDays!=null) explain.neighborsAvgAge     = { avgDays: ns.avgDays, n: ns.n };
     explain.sparseNeighborhood = !!ns.sparseNeighborhood;
@@ -116,9 +103,9 @@ function normalizeResult(res={}){
 
 let renderTimer=null;
 function afterScore(r,{debounced=false,force=false}={}){
-  putScore(r);
+  setScore(r);
   if (r.id !== selectedNodeId) return;
-  const doRender=()=>{ updateScorePanel(r); applyVisualCohesion(r); renderNarrativePanelIfEnabled(r); };
+  const doRender=()=>{ updateScorePanel(r); applyVisualCohesion(r); renderNarrative(r); };
   if (force) return doRender();
   if (debounced){ clearTimeout(renderTimer); renderTimer=setTimeout(doRender, RXL_FLAGS.debounceMs); return; }
   doRender();
@@ -127,17 +114,13 @@ function afterScore(r,{debounced=false,force=false}={}){
 /* ----------- init / UI ----------- */
 async function init(){
   await post('INIT',{ apiBase:(window.VisionConfig&&window.VisionConfig.API_BASE)||"", network:getNetwork(), concurrency:8, flags:{ graphSignals:true, streamBatch:true, neighborStats:true } });
-  if (!(window.VisionConfig && window.VisionConfig.API_BASE)) {
-    console.warn('[app] VisionConfig.API_BASE is empty — neighbors will use tx fallback.');
-    setGraphStatus('API base missing — using tx fallback (reduced neighbors)');
-  }
   bindUI(); buildGraphControls(); seedDemo();
 }
 init();
 
 function bindUI(){
   document.getElementById('refreshBtn')?.addEventListener('click', scoreVisible);
-  document.getElementById('clearBtn')?.addEventListener('click', ()=>{ window.graph?.setData({nodes:[],links:[]}); setSelected(null); hideNarrativePanel(); updateBatchStatus('Idle'); setGraphStatus('Idle'); navStack=[]; navIndex=-1; updateNavButtons(); });
+  document.getElementById('clearBtn')?.addEventListener('click', ()=>{ window.graph?.setData({nodes:[],links:[]}); setSelected(null); hideNarrative(); updateBatchStatus('Idle'); setGraphStatus('Idle'); navStack=[]; navIndex=-1; updateNavButtons(); });
   document.getElementById('networkSelect')?.addEventListener('change', async ()=>{ await post('INIT',{ network:getNetwork() }); scoreCache.clear(); neighborStats.clear(); scoreVisible(); });
   document.getElementById('loadSeedBtn')?.addEventListener('click', ()=>{ const seed=norm(document.getElementById('seedInput').value.trim()); if(seed) focusAddress(seed); });
 
@@ -148,9 +131,8 @@ function bindUI(){
     g.on('dataChanged', toggleLabelsByCount);
   }
 
-  // narrative mode switch
   const modeSel = document.getElementById('rxlMode');
-  if (modeSel) modeSel.addEventListener('change', ()=>{ const s=getScore(selectedNodeId); if (s) renderNarrativePanelIfEnabled(normalizeResult(s)); });
+  if (modeSel) modeSel.addEventListener('change', ()=>{ const s=getScore(selectedNodeId); if (s) renderNarrative(normalizeResult(s)); });
   document.getElementById('rxlCopy')?.addEventListener('click', async ()=>{
     const txt = document.getElementById('rxlNarrativeText')?.textContent || '';
     try { await navigator.clipboard.writeText(txt); } catch {}
@@ -196,7 +178,7 @@ function setGraphStatus(txt,{loading=false,overflow=0}={}){
   if (t) t.textContent = txt || '';
   if (more) more.style.display = overflow>0 ? 'inline-block' : 'none';
 }
-function formatNeighborStatusLine(s){
+function formatNSLine(s){
   if (!s) return 'Neighbors: (waiting on stats…)';
   const pct = typeof s.inactiveRatio==='number' ? `, inactive ${(s.inactiveRatio*100).toFixed(1)}%` : '';
   const extra = s.overflow>0 ? ` (+${s.overflow} more)` : '';
@@ -223,7 +205,7 @@ async function focusAddress(addr,{push=true}={}){
 
 /* ----------- tooltip ----------- */
 function showTooltip(n){
-  const addr=norm(n.id), cached=getScore(addr), ns=getNeighborStats(addr);
+  const addr=norm(n.id), cached=getScore(addr), ns=getNS(addr);
   const ofac=!!cached?.explain?.ofacHit; const ageDays=cached?.feats?.ageDays ?? null; const niceAge=ageDays?fmtAgeDays(ageDays):'—';
   const neighCount = ns?.n ?? ((window.graph?.getData()?.nodes?.length||1)-1);
   const tip=document.getElementById('rxlTooltip'); if(!tip) return;
@@ -268,22 +250,34 @@ function seedDemo(){ const seed='0xdemoseed00000000000000000000000000000001'; se
 /* ----------- meter / visuals / narrative ----------- */
 const FACTOR_WEIGHTS = { 'OFAC':40,'OFAC/sanctions list match':40,'sanctioned Counterparty':40,'fan In High':9,'shortest Path To Sanctioned':6,'burst Anomaly':0,'known Mixer Proximity':0 };
 const scorePanel = (window.ScoreMeter && window.ScoreMeter('#scorePanel')) || { setSummary(){}, setScore(){}, setBlocked(){}, setReasons(){}, getScore(){ return 0; } };
-function computeBreakdownFrom(res){ if(Array.isArray(res.breakdown)&&res.breakdown.length) return res.breakdown; const src=res.reasons||res.risk_factors||[]; if(!Array.isArray(src)||!src.length) return []; const list=src.map(l=>({label:String(l),delta:FACTOR_WEIGHTS[l]??0})); const has=list.some(x=>/sanction|ofac/i.test(x.label)); if((res.block||res.blocked||res.risk_score===100)&&!has) list.unshift({label:'sanctioned Counterparty',delta:40}); return list.sort((a,b)=>(b.delta||0)-(a.delta||0)); }
+
+function computeBreakdownFrom(res){
+  if(Array.isArray(res.breakdown)&&res.breakdown.length) return res.breakdown;
+  const src=res.reasons||res.risk_factors||[]; if(!Array.isArray(src)||!src.length) return [];
+  const list=src.map(l=>({label:String(l),delta:FACTOR_WEIGHTS[l]??0}));
+  const has=list.some(x=>/sanction|ofac/i.test(x.label));
+  if((res.block||res.blocked||res.risk_score===100)&&!has) list.unshift({label:'sanctioned Counterparty',delta:40});
+  return list.sort((a,b)=>(b.delta||0)-(a.delta||0));
+}
+
 function isBlockedVisual(res){ return !!(res.block||res.blocked||res.risk_score===100||res.sanctionHits||res.explain?.ofacHit||res.ofac===true); }
 function colorForScore(s,b){ if(b) return '#ef4444'; if(s>=80) return '#ff3b3b'; if(s>=60) return '#ffb020'; if(s>=40) return '#ffc857'; if(s>=20) return '#22d37b'; return '#00eec3'; }
+
 function updateScorePanel(res){
   res.parity = (typeof res.parity==='string' || res.parity===true) ? res.parity : 'SafeSend parity';
   const ageDays = Number(res.feats?.ageDays ?? 0);
   const ageDisplay = (ageDays>0) ? fmtAgeDays(ageDays) : '—';
   res.breakdown = computeBreakdownFrom(res);
   res.blocked = isBlockedVisual(res);
-  scorePanel.setSummary(res);
 
-  const ns = getNeighborStats(res.id) || {};
+  const ns = getNS(res.id) || {};
   const nStr = ns.n != null ? `${ns.n}` : '—';
   const avgAge = ns.avgDays != null ? fmtAgeDays(ns.avgDays) : '—';
   const inact = ns.inactiveRatio != null ? `${Math.round(ns.inactiveRatio*100)}%` : '—';
   const sparse = ns.sparseNeighborhood ? ' (limited data)' : '';
+
+  scorePanel.setSummary(res);
+
   const mixerPct = Math.round((res.feats?.mixerTaint ?? 0)*100) + '%';
   const neighPct = Math.round(((res.explain?.neighborsDormant?.inactiveRatio ?? res.feats?.local?.riskyNeighborRatio) || 0)*100) + '%';
 
@@ -297,18 +291,78 @@ function updateScorePanel(res){
     <div class="muted">Neighbors: <b>${nStr}</b> • Avg age <b>${avgAge}</b> • Inactive <b>${inact}</b>${sparse}</div>
   `;
 }
-function applyVisualCohesion(res){ const blocked=isBlockedVisual(res); const color=colorForScore(res.score||0, blocked); window.graph?.setHalo({ id:res.id, blocked, color, pulse: blocked?'red':'auto', intensity: Math.max(0.25,(res.score||0)/100), tooltip: res.label }); const panel=document.getElementById('scorePanel'); if (panel) panel.style.setProperty('--ring-color', color); }
-function renderNarrativePanelIfEnabled(res){
+
+function applyVisualCohesion(res){
+  const blocked=isBlockedVisual(res); const color=colorForScore(res.score||0, blocked);
+  window.graph?.setHalo({ id:res.id, blocked, color, pulse: blocked?'red':'auto', intensity: Math.max(0.25,(res.score||0)/100), tooltip: res.label });
+  const panel=document.getElementById('scorePanel'); if (panel) panel.style.setProperty('--ring-color', color);
+}
+
+/* ---------- Narrative (with neighbor rows) ---------- */
+function renderNarrative(res){
   if(!RXL_FLAGS.enableNarrative) return;
   const panel=document.getElementById('narrativePanel'); if(!panel) return;
-  const ns=getNeighborStats(res.id)||{}; const ofac=!!res.explain?.ofacHit;
-  const bits=[];
-  if (typeof res.feats?.ageDays==='number'){ const k=res.explain?.walletAgeRisk ?? 0; bits.push(k>=0.6?`newly created (${fmtAgeDays(res.feats.ageDays)})`:`long-standing (${fmtAgeDays(res.feats.ageDays)})`); }
-  if (typeof ns.inactiveRatio==='number' && ns.inactiveRatio>=0.6) bits.push('connected to a dormant cluster');
-  if (typeof ns.avgTx==='number' && ns.avgTx>=200) bits.push('high-volume counterparty cluster');
-  if (ns.sparseNeighborhood) bits.push('limited neighbor data—metrics may be conservative');
-  const txt = bits.length ? `This wallet is ${bits.join(', ')}${ofac ? '.' : '. No direct OFAC link was found.'}` : (ofac ? 'OFAC match detected.' : 'No direct OFAC link was found.');
-  const textEl=document.getElementById('rxlNarrativeText'); if(textEl) textEl.textContent = txt;
-  const badgesEl=document.getElementById('rxlBadges'); if (badgesEl){ badgesEl.innerHTML=''; const mk=(l,c='')=>{const s=document.createElement('span'); s.className=`badge ${c}`; s.textContent=l; return s;}; badgesEl.appendChild(mk(ofac?'OFAC':'No OFAC', ofac?'badge-risk':'badge-safe')); if (typeof ns.inactiveRatio==='number' && ns.inactiveRatio>=0.6) badgesEl.appendChild(mk('Dormant Cluster','badge-warn')); if (typeof ns.avgTx==='number' && ns.avgTx>=200) badgesEl.appendChild(mk('High Counterparty Volume','badge-warn')); if (ns.sparseNeighborhood) badgesEl.appendChild(mk('Limited Data','badge-warn')); }
+
+  const ns=getNS(res.id)||{};
+  const ofac=!!res.explain?.ofacHit;
+
+  // text
+  const parts=[];
+  if (typeof res.feats?.ageDays==='number'){
+    const k=res.explain?.walletAgeRisk ?? 0;
+    parts.push(k>=0.6?`newly created (${fmtAgeDays(res.feats.ageDays)})`:`long-standing (${fmtAgeDays(res.feats.ageDays)})`);
+  }
+  if (typeof ns.inactiveRatio==='number' && ns.inactiveRatio>=0.6) parts.push('connected to a dormant cluster');
+  if (typeof ns.avgTx==='number' && ns.avgTx>=200) parts.push('high-volume counterparty cluster');
+  if (ns.sparseNeighborhood) parts.push('limited neighbor data—metrics may be conservative');
+  const mode = document.getElementById('rxlMode')?.value || 'analyst';
+  let text = parts.length ? `This wallet is ${parts.join(', ')}${ofac ? '.' : '. No direct OFAC link was found.'}` : (ofac ? 'OFAC match detected.' : 'No direct OFAC link was found.');
+  if (mode==='consumer') text = text.replace('This wallet is','Unusual pattern: this wallet').replace(' No direct OFAC link was found.','');
+
+  const textEl=document.getElementById('rxlNarrativeText'); if(textEl) textEl.textContent = text;
+
+  // badges
+  const badgesEl=document.getElementById('rxlBadges');
+  if (badgesEl){
+    badgesEl.innerHTML='';
+    const mk=(l,c='')=>{ const s=document.createElement('span'); s.className=`badge ${c}`; s.textContent=l; return s; };
+    badgesEl.appendChild(mk(ofac?'OFAC':'No OFAC', ofac?'badge-risk':'badge-safe'));
+    if (typeof ns.inactiveRatio==='number' && ns.inactiveRatio>=0.6) badgesEl.appendChild(mk('Dormant Cluster','badge-warn'));
+    if (typeof ns.avgTx==='number' && ns.avgTx>=200) badgesEl.appendChild(mk('High Counterparty Volume','badge-warn'));
+    if (ns.sparseNeighborhood) badgesEl.appendChild(mk('Limited Data','badge-warn'));
+  }
+
+  // factor rows = neighbor summary + breakdown
+  const tbody=document.querySelector('#rxlFactors tbody');
+  if (tbody){
+    tbody.innerHTML='';
+
+    // Row 1: Neighbors summary
+    const nStr = ns.n != null ? `${ns.n}` : '—';
+    const avgAge = ns.avgDays != null ? fmtAgeDays(ns.avgDays) : '—';
+    const inact = ns.inactiveRatio != null ? `${Math.round(ns.inactiveRatio*100)}%` : '—';
+    const tr0=document.createElement('tr');
+    tr0.innerHTML = `<td>Neighbors</td><td>N ${nStr} • Avg age ${avgAge} • Inactive ${inact}</td><td style="text-align:right;">—</td><td><code>neighborStats</code></td>`;
+    tbody.appendChild(tr0);
+
+    // Row 2: Avg Tx if present
+    if (typeof ns.avgTx==='number'){
+      const tr1=document.createElement('tr');
+      tr1.innerHTML = `<td>Neighbors avg tx</td><td>avgTx ${Math.round(ns.avgTx)}</td><td style="text-align:right;">—</td><td><code>neighborStats</code></td>`;
+      tbody.appendChild(tr1);
+    }
+
+    // Other breakdown items
+    const breakdown = computeBreakdownFrom(res);
+    (breakdown||[]).forEach(row=>{
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td>${row.label}</td><td>—</td><td style="text-align:right;">${row.delta!=null?('+'+row.delta):'—'}</td><td><code>breakdown</code></td>`;
+      tbody.appendChild(tr);
+    });
+  }
 }
-function hideNarrativePanel(){ const p=document.getElementById('narrativePanel'); if (p) p.hidden=true; }
+
+function hideNarrative(){ const p=document.getElementById('narrativePanel'); if (p) p.hidden=true; }
+window.__RXL__ = { focusAddress };
+
+/* ------------------- end ------------------- */
