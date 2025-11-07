@@ -1,14 +1,22 @@
-// app.js — Vision 1_4_2c (Narrative: neighbor stats + factor rows)
+// app.js — Vision 1_4_2d (Control Panel + toggles wired)
 import './ui/ScoreMeter.js?v=2025-11-02';
 import './graph.js?v=2025-11-05';
 
-const RXL_FLAGS = Object.freeze({
-  enableNarrative: true,
-  debounceMs: 180,
+const SETTINGS = {
+  narrative: true,
+  labels: true,
+  tooltips: true,
+  heatmap: false,                 // requires graph.js support; we no-op if absent
+  flagCustodian: true,
+  flagCluster:   true,
+  flagDormant:   true,
+  flagMixer:     true,
+  flagPlatform:  true,
   labelThreshold: 150,
-  defaultCap: 120,
-  moreStep: 120,
-});
+  neighborCapDefault: 120,
+  neighborMoreStep: 120,
+  debounceMs: 180,
+};
 
 const worker = new Worker('./workers/visionRisk.worker.js', { type: 'module' });
 const pending = new Map();
@@ -107,14 +115,14 @@ function afterScore(r,{debounced=false,force=false}={}){
   if (r.id !== selectedNodeId) return;
   const doRender=()=>{ updateScorePanel(r); applyVisualCohesion(r); renderNarrative(r); };
   if (force) return doRender();
-  if (debounced){ clearTimeout(renderTimer); renderTimer=setTimeout(doRender, RXL_FLAGS.debounceMs); return; }
+  if (debounced){ clearTimeout(renderTimer); renderTimer=setTimeout(doRender, SETTINGS.debounceMs); return; }
   doRender();
 }
 
 /* ----------- init / UI ----------- */
 async function init(){
   await post('INIT',{ apiBase:(window.VisionConfig&&window.VisionConfig.API_BASE)||"", network:getNetwork(), concurrency:8, flags:{ graphSignals:true, streamBatch:true, neighborStats:true } });
-  bindUI(); buildGraphControls(); seedDemo();
+  bindUI(); buildGraphControls(); bindControlPanel(); seedDemo();
 }
 init();
 
@@ -127,7 +135,7 @@ function bindUI(){
   const g=window.graph;
   if (g?.on){
     g.on('selectNode',(n)=>{ if(!n) return; focusAddress(norm(n.id)); });
-    g.on('hoverNode',(n)=>{ if(!n){ hideTooltip(); return; } showTooltip(n); });
+    g.on('hoverNode',(n)=>{ if(!SETTINGS.tooltips){ hideTooltip(); return; } if(!n){ hideTooltip(); return; } showTooltip(n); });
     g.on('dataChanged', toggleLabelsByCount);
   }
 
@@ -139,8 +147,66 @@ function bindUI(){
   });
 }
 
+/* ----------- Control Panel bindings ----------- */
+function bindControlPanel(){
+  // checkboxes
+  const c = (id)=> document.getElementById(id);
+
+  const apply = ()=>{
+    SETTINGS.narrative  = !!c('ctlNarrative')?.checked;
+    SETTINGS.labels     = !!c('ctlLabels')?.checked;
+    SETTINGS.tooltips   = !!c('ctlTooltips')?.checked;
+    SETTINGS.heatmap    = !!c('ctlHeatmap')?.checked;
+
+    SETTINGS.flagCustodian = !!c('ctlFlagCustodian')?.checked;
+    SETTINGS.flagCluster   = !!c('ctlFlagCluster')?.checked;
+    SETTINGS.flagDormant   = !!c('ctlFlagDormant')?.checked;
+    SETTINGS.flagMixer     = !!c('ctlFlagMixer')?.checked;
+    SETTINGS.flagPlatform  = !!c('ctlFlagPlatform')?.checked;
+
+    const lt = Number(c('ctlLabelThresh')?.value || SETTINGS.labelThreshold);
+    const cap= Number(c('ctlNeighborCap')?.value || SETTINGS.neighborCapDefault);
+    SETTINGS.labelThreshold = Math.max(20, Math.min(1000, lt));
+    SETTINGS.neighborCapDefault = Math.max(40, Math.min(1000, cap));
+
+    // apply visuals
+    window.graph?.setLabelVisibility(SETTINGS.labels && currentNodeCount() <= SETTINGS.labelThreshold);
+    if (typeof window.graph?.setHeatmapMode === 'function') {
+      window.graph.setHeatmapMode(SETTINGS.heatmap);
+    }
+
+    // narrative panel show/hide
+    const panel=document.getElementById('narrativePanel');
+    if (panel) panel.style.display = SETTINGS.narrative ? '' : 'none';
+
+    // refresh current selection UI
+    const r = getScore(selectedNodeId);
+    if (r) afterScore(normalizeResult(r), { force:true });
+
+    // optionally re-fetch neighbors with new cap
+    if (selectedNodeId) refreshGraphFromLive(selectedNodeId, { cap: SETTINGS.neighborCapDefault });
+  };
+
+  c('ctlApply')?.addEventListener('click', apply);
+
+  // seed with default values
+  if (c('ctlNarrative'))   c('ctlNarrative').checked   = SETTINGS.narrative;
+  if (c('ctlLabels'))      c('ctlLabels').checked      = SETTINGS.labels;
+  if (c('ctlTooltips'))    c('ctlTooltips').checked    = SETTINGS.tooltips;
+  if (c('ctlHeatmap'))     c('ctlHeatmap').checked     = SETTINGS.heatmap;
+
+  if (c('ctlFlagCustodian')) c('ctlFlagCustodian').checked = SETTINGS.flagCustodian;
+  if (c('ctlFlagCluster'))   c('ctlFlagCluster').checked   = SETTINGS.flagCluster;
+  if (c('ctlFlagDormant'))   c('ctlFlagDormant').checked   = SETTINGS.flagDormant;
+  if (c('ctlFlagMixer'))     c('ctlFlagMixer').checked     = SETTINGS.flagMixer;
+  if (c('ctlFlagPlatform'))  c('ctlFlagPlatform').checked  = SETTINGS.flagPlatform;
+
+  if (c('ctlLabelThresh')) c('ctlLabelThresh').value = String(SETTINGS.labelThreshold);
+  if (c('ctlNeighborCap')) c('ctlNeighborCap').value = String(SETTINGS.neighborCapDefault);
+}
+
 /* ----------- toolbar + status ----------- */
-let neighborCap=RXL_FLAGS.defaultCap; let neighborOverflow=0;
+let neighborCap=SETTINGS.neighborCapDefault; let neighborOverflow=0;
 function buildGraphControls(){
   const host=document.getElementById('graph'); if(!host) return;
   const box=document.createElement('div');
@@ -166,7 +232,7 @@ function buildGraphControls(){
   status.style.cssText='position:absolute;left:12px;bottom:10px;right:12px;font-size:12px;color:#8aa3a0;display:flex;gap:8px;align-items:center;pointer-events:none;';
   status.innerHTML=`<span id="graphSpin" style="display:none">⏳</span><span id="graphStatusText">Idle</span><span style="flex:1"></span><button id="btnMore" class="btn btn-ghost" style="pointer-events:auto;display:none">Load more</button>`;
   host.appendChild(status);
-  document.getElementById('btnMore')?.addEventListener('click', ()=>{ neighborCap += RXL_FLAGS.moreStep; if (selectedNodeId) refreshGraphFromLive(selectedNodeId, { cap: neighborCap }); });
+  document.getElementById('btnMore')?.addEventListener('click', ()=>{ neighborCap += SETTINGS.neighborMoreStep; if (selectedNodeId) refreshGraphFromLive(selectedNodeId, { cap: neighborCap }); });
 
   const st=document.createElement('style');
   st.textContent=`#graph{position:relative}.graph-controls{position:absolute;top:8px;right:8px;left:8px;display:flex;gap:6px;align-items:center;z-index:3}`;
@@ -198,7 +264,7 @@ async function focusAddress(addr,{push=true}={}){
         .then(r=>afterScore(normalizeResult(r),{debounced:true})).catch(()=>{});
 
   setGraphStatus('Loading neighbors…', { loading:true, overflow:0 });
-  neighborCap = RXL_FLAGS.defaultCap;
+  neighborCap = SETTINGS.neighborCapDefault;
   await refreshGraphFromLive(id, { cap: neighborCap });
   window.graph?.centerOn(id, { animate:true }); window.graph?.zoomFit();
 }
@@ -241,8 +307,18 @@ function scoreVisible(){
 }
 
 /* ----------- graph helpers ----------- */
-function setGraphData({nodes,links}){ window.__VISION_NODES__=nodes||[]; window.__VISION_LINKS__=links||[]; window.__SHOW_LABELS_BELOW__=RXL_FLAGS.labelThreshold; window.graph?.setData({ nodes:window.__VISION_NODES__, links:window.__VISION_LINKS__ }); }
-function toggleLabelsByCount(){ const count=(window.graph?.getData()?.nodes||[]).length; window.graph?.setLabelVisibility(count <= RXL_FLAGS.labelThreshold); }
+function currentNodeCount(){ return (window.graph?.getData()?.nodes || []).length; }
+function setGraphData({nodes,links}){
+  window.__VISION_NODES__=nodes||[]; window.__VISION_LINKS__=links||[];
+  window.__SHOW_LABELS_BELOW__=SETTINGS.labelThreshold;
+  window.graph?.setData({ nodes:window.__VISION_NODES__, links:window.__VISION_LINKS__ });
+  window.graph?.setLabelVisibility(SETTINGS.labels && currentNodeCount() <= SETTINGS.labelThreshold);
+  if (typeof window.graph?.setHeatmapMode === 'function') window.graph.setHeatmapMode(SETTINGS.heatmap);
+}
+function toggleLabelsByCount(){
+  const show = SETTINGS.labels && currentNodeCount() <= SETTINGS.labelThreshold;
+  window.graph?.setLabelVisibility(show);
+}
 
 /* ----------- seed ----------- */
 function seedDemo(){ const seed='0xdemoseed00000000000000000000000000000001'; setGraphData({ nodes:[{ id:seed, address:seed, network:getNetwork() }], links:[] }); setSelected(seed); }
@@ -293,28 +369,44 @@ function updateScorePanel(res){
 }
 
 function applyVisualCohesion(res){
-  const blocked=isBlockedVisual(res); const color=colorForScore(res.score||0, blocked);
+  // Respect flag toggles (visual emphasis only; scoring unchanged)
+  const blocked=isBlockedVisual(res);
+  const color=colorForScore(res.score||0, blocked);
   window.graph?.setHalo({ id:res.id, blocked, color, pulse: blocked?'red':'auto', intensity: Math.max(0.25,(res.score||0)/100), tooltip: res.label });
+
+  // Optional: if your graph supports category styling, pass flags + toggles
+  if (typeof window.graph?.setNodeFlags === 'function'){
+    const flags = (res.flags || {});
+    window.graph.setNodeFlags(res.id, {
+      custodian: SETTINGS.flagCustodian && !!flags.custodian,
+      cluster:   SETTINGS.flagCluster   && !!flags.clusterRisk,
+      dormant:   SETTINGS.flagDormant   && !!flags.dormant,
+      mixer:     SETTINGS.flagMixer     && !!flags.mixerLink,
+      platform:  SETTINGS.flagPlatform  && !!flags.platformEntity,
+    });
+  }
+
   const panel=document.getElementById('scorePanel'); if (panel) panel.style.setProperty('--ring-color', color);
 }
 
-/* ---------- Narrative (with neighbor rows) ---------- */
+/* ---------- Narrative (respects toggles) ---------- */
 function renderNarrative(res){
-  if(!RXL_FLAGS.enableNarrative) return;
   const panel=document.getElementById('narrativePanel'); if(!panel) return;
+  panel.style.display = SETTINGS.narrative ? '' : 'none';
+  if (!SETTINGS.narrative) return;
 
   const ns=getNS(res.id)||{};
   const ofac=!!res.explain?.ofacHit;
 
-  // text
   const parts=[];
   if (typeof res.feats?.ageDays==='number'){
     const k=res.explain?.walletAgeRisk ?? 0;
     parts.push(k>=0.6?`newly created (${fmtAgeDays(res.feats.ageDays)})`:`long-standing (${fmtAgeDays(res.feats.ageDays)})`);
   }
-  if (typeof ns.inactiveRatio==='number' && ns.inactiveRatio>=0.6) parts.push('connected to a dormant cluster');
-  if (typeof ns.avgTx==='number' && ns.avgTx>=200) parts.push('high-volume counterparty cluster');
+  if (typeof ns.inactiveRatio==='number' && ns.inactiveRatio>=0.6 && SETTINGS.flagDormant) parts.push('connected to a dormant cluster');
+  if (typeof ns.avgTx==='number' && ns.avgTx>=200 && SETTINGS.flagCluster) parts.push('high-volume counterparty cluster');
   if (ns.sparseNeighborhood) parts.push('limited neighbor data—metrics may be conservative');
+
   const mode = document.getElementById('rxlMode')?.value || 'analyst';
   let text = parts.length ? `This wallet is ${parts.join(', ')}${ofac ? '.' : '. No direct OFAC link was found.'}` : (ofac ? 'OFAC match detected.' : 'No direct OFAC link was found.');
   if (mode==='consumer') text = text.replace('This wallet is','Unusual pattern: this wallet').replace(' No direct OFAC link was found.','');
@@ -327,17 +419,21 @@ function renderNarrative(res){
     badgesEl.innerHTML='';
     const mk=(l,c='')=>{ const s=document.createElement('span'); s.className=`badge ${c}`; s.textContent=l; return s; };
     badgesEl.appendChild(mk(ofac?'OFAC':'No OFAC', ofac?'badge-risk':'badge-safe'));
-    if (typeof ns.inactiveRatio==='number' && ns.inactiveRatio>=0.6) badgesEl.appendChild(mk('Dormant Cluster','badge-warn'));
-    if (typeof ns.avgTx==='number' && ns.avgTx>=200) badgesEl.appendChild(mk('High Counterparty Volume','badge-warn'));
-    if (ns.sparseNeighborhood) badgesEl.appendChild(mk('Limited Data','badge-warn'));
+    if (SETTINGS.flagDormant && typeof ns.inactiveRatio==='number' && ns.inactiveRatio>=0.6) badgesEl.appendChild(mk('Dormant Cluster','badge-warn'));
+    if (SETTINGS.flagCluster && typeof ns.avgTx==='number' && ns.avgTx>=200) badgesEl.appendChild(mk('High Counterparty Volume','badge-warn'));
+
+    // platform/custodian/mixer badges if present and enabled
+    const flags = (getScore(res.id)?.flags) || {};
+    if (SETTINGS.flagPlatform && flags.platformEntity) badgesEl.appendChild(mk(flags.platformName || 'Platform Entity','badge-warn'));
+    if (SETTINGS.flagCustodian && flags.custodian) badgesEl.appendChild(mk(flags.custodianName || 'Custodian',''));
+    if (SETTINGS.flagMixer && flags.mixerLink) badgesEl.appendChild(mk('Mixer Proximity','badge-warn'));
   }
 
-  // factor rows = neighbor summary + breakdown
+  // factors table
   const tbody=document.querySelector('#rxlFactors tbody');
   if (tbody){
     tbody.innerHTML='';
 
-    // Row 1: Neighbors summary
     const nStr = ns.n != null ? `${ns.n}` : '—';
     const avgAge = ns.avgDays != null ? fmtAgeDays(ns.avgDays) : '—';
     const inact = ns.inactiveRatio != null ? `${Math.round(ns.inactiveRatio*100)}%` : '—';
@@ -345,14 +441,12 @@ function renderNarrative(res){
     tr0.innerHTML = `<td>Neighbors</td><td>N ${nStr} • Avg age ${avgAge} • Inactive ${inact}</td><td style="text-align:right;">—</td><td><code>neighborStats</code></td>`;
     tbody.appendChild(tr0);
 
-    // Row 2: Avg Tx if present
     if (typeof ns.avgTx==='number'){
       const tr1=document.createElement('tr');
       tr1.innerHTML = `<td>Neighbors avg tx</td><td>avgTx ${Math.round(ns.avgTx)}</td><td style="text-align:right;">—</td><td><code>neighborStats</code></td>`;
       tbody.appendChild(tr1);
     }
 
-    // Other breakdown items
     const breakdown = computeBreakdownFrom(res);
     (breakdown||[]).forEach(row=>{
       const tr=document.createElement('tr');
@@ -362,7 +456,6 @@ function renderNarrative(res){
   }
 }
 
-function hideNarrative(){ const p=document.getElementById('narrativePanel'); if (p) p.hidden=true; }
-window.__RXL__ = { focusAddress };
+function hideNarrative(){ const p=document.getElementById('narrativePanel'); if (p) p.style.display='none'; }
 
 /* ------------------- end ------------------- */
