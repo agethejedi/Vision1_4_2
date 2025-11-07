@@ -1,13 +1,68 @@
-// app.js — Vision 1_4_2a hot-fix: explicit statuses + robust merges
+// app.js — Vision 1_4_2b (history + toolbar + narrative present)
 import './ui/ScoreMeter.js?v=2025-11-02';
 import './graph.js?v=2025-11-05';
 
-const RXL_FLAGS = Object.freeze({ enableNarrative:true, debounceMs:180, labelThreshold:150, defaultCap:120, moreStep:120 });
+const RXL_FLAGS = Object.freeze({
+  enableNarrative: true,
+  debounceMs: 180,
+  labelThreshold: 150,
+  defaultCap: 120,
+  moreStep: 120,
+});
 
-const worker = new Worker('./workers/visionRisk.worker.js', { type:'module' });
+const worker = new Worker('./workers/visionRisk.worker.js', { type: 'module' });
 const pending = new Map();
-function post(type, payload){ return new Promise((resolve,reject)=>{ const id=crypto.randomUUID(); pending.set(id,{resolve,reject}); worker.postMessage({id,type,payload}); }); }
+function post(type, payload){
+  return new Promise((resolve, reject) => {
+    const id = crypto.randomUUID();
+    pending.set(id, { resolve, reject });
+    worker.postMessage({ id, type, payload });
+  });
+}
 
+/* ---------------- state ---------------- */
+function getNetwork(){ return document.getElementById('networkSelect')?.value || 'eth'; }
+function norm(x){ return String(x||'').toLowerCase(); }
+function clamp(x,a=0,b=1){ return Math.max(a, Math.min(b, x)); }
+function fmtAgeDays(d){ if(!(d>0)) return '—'; const m=Math.round(d/30.44); const y=Math.floor(m/12); const mo=m%12; if(y>0&&mo>0) return `${y}y ${mo}m`; if(y>0) return `${y}y`; return `${mo}m`; }
+function hasReason(res,kw){ const arr=res.reasons||res.risk_factors||[]; const txt=Array.isArray(arr)?JSON.stringify(arr).toLowerCase():String(arr).toLowerCase(); return txt.includes(kw); }
+function coerceOfacFlag(explain,res){ const hit=!!(res.sanctionHits||res.sanctioned||res.ofac||hasReason(res,'ofac')||hasReason(res,'sanction')); explain.ofacHit=hit; return hit; }
+function updateBatchStatus(t){ const el=document.getElementById('batchStatus'); if(el) el.textContent=t; }
+
+const scoreCache = new Map();
+const neighborStats = new Map();
+function keyFor(a){ return `${getNetwork()}:${norm(a)}`; }
+function putScore(r){ scoreCache.set(keyFor(r.id), r); }
+function getScore(a){ return scoreCache.get(keyFor(a)); }
+function setNeighborStats(a,s){ neighborStats.set(keyFor(a), s); }
+function getNeighborStats(a){ return neighborStats.get(keyFor(a)); }
+
+let selectedNodeId = null;
+function setSelected(id){ selectedNodeId = norm(id); }
+
+/* ----------- history (Back/Forward) ----------- */
+let navStack = [];     // array of ids
+let navIndex = -1;     // current pointer
+
+function pushHistory(id){
+  // trim forward tail when navigating to a new node
+  if (navIndex < navStack.length - 1) navStack = navStack.slice(0, navIndex + 1);
+  if (navStack[navStack.length - 1] !== id) navStack.push(id);
+  navIndex = navStack.length - 1;
+  updateNavButtons();
+}
+function canBack(){ return navIndex > 0; }
+function canFwd(){ return navIndex >= 0 && navIndex < navStack.length - 1; }
+function navBack(){ if (!canBack()) return; const id = navStack[--navIndex]; focusAddress(id, { push:false }); updateNavButtons(); }
+function navForward(){ if (!canFwd()) return; const id = navStack[++navIndex]; focusAddress(id, { push:false }); updateNavButtons(); }
+function updateNavButtons(){
+  const b = document.getElementById('btnBack');
+  const f = document.getElementById('btnFwd');
+  if (b) b.disabled = !canBack();
+  if (f) f.disabled = !canFwd();
+}
+
+/* ----------- worker plumbing ----------- */
 worker.onmessage = (e) => {
   const { id, type, data, error } = e.data || {};
   const req = pending.get(id);
@@ -19,9 +74,7 @@ worker.onmessage = (e) => {
 
   if (type === 'RESULT'){
     if (looksGraph){
-      if ((data.nodes?.length||0) <= 1) setGraphStatus('No neighbors found (API empty)', { loading:false });
       setGraphData(data); toggleLabelsByCount();
-      setGraphStatus(`Neighbors loaded: ${(data.nodes?.length||0)-1}${neighborOverflow>0?` (+${neighborOverflow} more)`:''}`);
       if (req){ req.resolve(data); pending.delete(id); }
       return;
     }
@@ -42,25 +95,7 @@ worker.onmessage = (e) => {
   if (type === 'ERROR'){ console.error('[app] worker ERROR', error); setGraphStatus(String(error||'Error')); if (req){ req.reject(new Error(error)); pending.delete(id);} return; }
 };
 
-/* ======= state & helpers ======= */
-function getNetwork(){ return document.getElementById('networkSelect')?.value || 'eth'; }
-function norm(x){ return String(x||'').toLowerCase(); }
-function clamp(x,a=0,b=1){ return Math.max(a, Math.min(b, x)); }
-function fmtAgeDays(d){ if(!(d>0)) return '—'; const m=Math.round(d/30.44); const y=Math.floor(m/12); const mo=m%12; if(y>0&&mo>0) return `${y}y ${mo}m`; if(y>0) return `${y}y`; return `${mo}m`; }
-function hasReason(res,kw){ const arr=res.reasons||res.risk_factors||[]; const txt=Array.isArray(arr)?JSON.stringify(arr).toLowerCase():String(arr).toLowerCase(); return txt.includes(kw); }
-function coerceOfacFlag(explain,res){ const hit=!!(res.sanctionHits||res.sanctioned||res.ofac||hasReason(res,'ofac')||hasReason(res,'sanction')); explain.ofacHit=hit; return hit; }
-function updateBatchStatus(t){ const el=document.getElementById('batchStatus'); if(el) el.textContent=t; }
-
-const scoreCache = new Map(); const neighborStats = new Map();
-function keyFor(a){ return `${getNetwork()}:${norm(a)}`; }
-function putScore(r){ scoreCache.set(keyFor(r.id), r); }
-function getScore(a){ return scoreCache.get(keyFor(a)); }
-function setNeighborStats(a,s){ neighborStats.set(keyFor(a), s); }
-function getNeighborStats(a){ return neighborStats.get(keyFor(a)); }
-
-let selectedNodeId=null; function setSelected(id){ selectedNodeId=norm(id); }
-
-/* ======= normalize + render ======= */
+/* ----------- normalize + render ----------- */
 function normalizeResult(res={}){
   const id = norm(res.id || res.address);
   const serverScore = (typeof res.risk_score==='number') ? res.risk_score : null;
@@ -70,10 +105,12 @@ function normalizeResult(res={}){
   coerceOfacFlag(explain, res);
   if (typeof explain.walletAgeRisk!=='number'){ const d=Number(res.feats?.ageDays ?? NaN); if(!Number.isNaN(d)&&d>=0) explain.walletAgeRisk = clamp(1 - Math.min(1, d/(365*2))); }
   const ns = getNeighborStats(id);
-  if (ns){ explain.neighborsDormant={ inactiveRatio: ns.inactiveRatio, n: ns.n, avgInactiveAge: ns.avgInactiveAge??null };
-           if (ns.avgTx!=null)  explain.neighborsAvgTxCount={ avgTx: ns.avgTx, n: ns.n };
-           if (ns.avgDays!=null) explain.neighborsAvgAge    ={ avgDays: ns.avgDays, n: ns.n };
-           explain.sparseNeighborhood = !!ns.sparseNeighborhood; }
+  if (ns){
+    explain.neighborsDormant = { inactiveRatio: ns.inactiveRatio, n: ns.n, avgInactiveAge: ns.avgInactiveAge ?? null };
+    if (ns.avgTx!=null)  explain.neighborsAvgTxCount = { avgTx: ns.avgTx, n: ns.n };
+    if (ns.avgDays!=null) explain.neighborsAvgAge     = { avgDays: ns.avgDays, n: ns.n };
+    explain.sparseNeighborhood = !!ns.sparseNeighborhood;
+  }
   return { ...res, id, address:id, score, explain, block:blocked, blocked };
 }
 
@@ -87,12 +124,12 @@ function afterScore(r,{debounced=false,force=false}={}){
   doRender();
 }
 
-/* ======= init / UI ======= */
+/* ----------- init / UI ----------- */
 async function init(){
   await post('INIT',{ apiBase:(window.VisionConfig&&window.VisionConfig.API_BASE)||"", network:getNetwork(), concurrency:8, flags:{ graphSignals:true, streamBatch:true, neighborStats:true } });
   if (!(window.VisionConfig && window.VisionConfig.API_BASE)) {
-    console.warn('[app] VisionConfig.API_BASE is empty — neighbors will use fallback-only.');
-    setGraphStatus('API base missing — using tx-based fallback (reduced neighbors)');
+    console.warn('[app] VisionConfig.API_BASE is empty — neighbors will use tx fallback.');
+    setGraphStatus('API base missing — using tx fallback (reduced neighbors)');
   }
   bindUI(); buildGraphControls(); seedDemo();
 }
@@ -100,25 +137,47 @@ init();
 
 function bindUI(){
   document.getElementById('refreshBtn')?.addEventListener('click', scoreVisible);
-  document.getElementById('clearBtn')?.addEventListener('click', ()=>{ window.graph?.setData({nodes:[],links:[]}); setSelected(null); hideNarrativePanel(); updateBatchStatus('Idle'); setGraphStatus('Idle'); });
+  document.getElementById('clearBtn')?.addEventListener('click', ()=>{ window.graph?.setData({nodes:[],links:[]}); setSelected(null); hideNarrativePanel(); updateBatchStatus('Idle'); setGraphStatus('Idle'); navStack=[]; navIndex=-1; updateNavButtons(); });
   document.getElementById('networkSelect')?.addEventListener('change', async ()=>{ await post('INIT',{ network:getNetwork() }); scoreCache.clear(); neighborStats.clear(); scoreVisible(); });
   document.getElementById('loadSeedBtn')?.addEventListener('click', ()=>{ const seed=norm(document.getElementById('seedInput').value.trim()); if(seed) focusAddress(seed); });
 
   const g=window.graph;
-  if (g?.on){ g.on('selectNode',(n)=>{ if(!n) return; const id=norm(n.id); focusAddress(id); }); g.on('hoverNode',(n)=>{ if(!n) { hideTooltip(); return; } showTooltip(n); }); g.on('dataChanged', toggleLabelsByCount); }
+  if (g?.on){
+    g.on('selectNode',(n)=>{ if(!n) return; focusAddress(norm(n.id)); });
+    g.on('hoverNode',(n)=>{ if(!n){ hideTooltip(); return; } showTooltip(n); });
+    g.on('dataChanged', toggleLabelsByCount);
+  }
+
+  // narrative mode switch
+  const modeSel = document.getElementById('rxlMode');
+  if (modeSel) modeSel.addEventListener('change', ()=>{ const s=getScore(selectedNodeId); if (s) renderNarrativePanelIfEnabled(normalizeResult(s)); });
+  document.getElementById('rxlCopy')?.addEventListener('click', async ()=>{
+    const txt = document.getElementById('rxlNarrativeText')?.textContent || '';
+    try { await navigator.clipboard.writeText(txt); } catch {}
+  });
 }
 
-/* ======= graph controls & status ======= */
+/* ----------- toolbar + status ----------- */
 let neighborCap=RXL_FLAGS.defaultCap; let neighborOverflow=0;
 function buildGraphControls(){
   const host=document.getElementById('graph'); if(!host) return;
-  const box=document.createElement('div'); box.className='graph-controls'; box.innerHTML=`
+  const box=document.createElement('div');
+  box.className='graph-controls';
+  box.innerHTML=`
+    <div style="display:flex;gap:6px">
+      <button id="btnBack" class="btn btn-ghost" title="Back">⟵</button>
+      <button id="btnFwd"  class="btn btn-ghost" title="Forward">⟶</button>
+    </div>
     <span style="flex:1"></span>
     <button id="btnReset" class="btn btn-ghost">Reset</button>
     <button id="btnFit" class="btn">Zoom Fit</button>`;
   host.appendChild(box);
+
   box.querySelector('#btnReset').addEventListener('click', ()=>window.graph?.resetView());
   box.querySelector('#btnFit').addEventListener('click', ()=>window.graph?.zoomFit());
+  box.querySelector('#btnBack').addEventListener('click', navBack);
+  box.querySelector('#btnFwd').addEventListener('click', navForward);
+  updateNavButtons();
 
   const status=document.createElement('div');
   status.id='graphStatus';
@@ -127,7 +186,9 @@ function buildGraphControls(){
   host.appendChild(status);
   document.getElementById('btnMore')?.addEventListener('click', ()=>{ neighborCap += RXL_FLAGS.moreStep; if (selectedNodeId) refreshGraphFromLive(selectedNodeId, { cap: neighborCap }); });
 
-  const st=document.createElement('style'); st.textContent=`#graph{position:relative}.graph-controls{position:absolute;top:8px;right:8px;left:8px;display:flex;gap:6px;align-items:center;z-index:3}`; document.head.appendChild(st);
+  const st=document.createElement('style');
+  st.textContent=`#graph{position:relative}.graph-controls{position:absolute;top:8px;right:8px;left:8px;display:flex;gap:6px;align-items:center;z-index:3}`;
+  document.head.appendChild(st);
 }
 function setGraphStatus(txt,{loading=false,overflow=0}={}){
   const spin=document.getElementById('graphSpin'); const t=document.getElementById('graphStatusText'); const more=document.getElementById('btnMore');
@@ -143,14 +204,16 @@ function formatNeighborStatusLine(s){
   return `Neighbors: ${s.n ?? 0}${extra}${pct}${s.sparseNeighborhood?' — Limited neighbor data—metrics may be conservative.':''}`;
 }
 
-/* ======= navigation ======= */
-async function focusAddress(addr){
+/* ----------- navigation focus ----------- */
+async function focusAddress(addr,{push=true}={}){
   const id=norm(addr); setSelected(id);
-  window.graph?.flashHalo(id);
+  if (push) pushHistory(id);
 
+  window.graph?.flashHalo(id);
   const cached=getScore(id);
   if (cached) afterScore(normalizeResult(cached));
-  else post('SCORE_ONE',{ item:{ type:'address', id, network:getNetwork() } }).then(r=>afterScore(normalizeResult(r),{debounced:true})).catch(()=>{});
+  else post('SCORE_ONE',{ item:{ type:'address', id, network:getNetwork() } })
+        .then(r=>afterScore(normalizeResult(r),{debounced:true})).catch(()=>{});
 
   setGraphStatus('Loading neighbors…', { loading:true, overflow:0 });
   neighborCap = RXL_FLAGS.defaultCap;
@@ -158,7 +221,7 @@ async function focusAddress(addr){
   window.graph?.centerOn(id, { animate:true }); window.graph?.zoomFit();
 }
 
-/* ======= tooltip ======= */
+/* ----------- tooltip ----------- */
 function showTooltip(n){
   const addr=norm(n.id), cached=getScore(addr), ns=getNeighborStats(addr);
   const ofac=!!cached?.explain?.ofacHit; const ageDays=cached?.feats?.ageDays ?? null; const niceAge=ageDays?fmtAgeDays(ageDays):'—';
@@ -169,7 +232,7 @@ function showTooltip(n){
 }
 function hideTooltip(){ const tip=document.getElementById('rxlTooltip'); if (tip) tip.style.display='none'; }
 
-/* ======= neighbors ======= */
+/* ----------- neighbors ----------- */
 async function getNeighborsLive(centerId,{cap}){
   try {
     const res = await post('NEIGHBORS', { id:centerId, network:getNetwork(), hop:1, limit:cap, cap });
@@ -180,10 +243,12 @@ async function getNeighborsLive(centerId,{cap}){
 async function refreshGraphFromLive(centerId,{cap}){
   const { nodes, links } = await getNeighborsLive(centerId,{cap});
   if (!nodes.length && !links.length) { setGraphStatus('No neighbors found.'); return; }
-  setGraphStatus(`Neighbors loaded: ${(nodes.length||0)-1}${neighborOverflow>0?` (+${neighborOverflow} more)`:''}`, { loading:true, overflow: neighborOverflow });
+  setGraphData({ nodes, links });
+  toggleLabelsByCount();
+  setGraphStatus(`Neighbors loaded: ${(nodes.length||0)-1}${neighborOverflow>0?` (+${neighborOverflow} more)`:''}`);
 }
 
-/* ======= scoring visible ======= */
+/* ----------- scoring visible ----------- */
 function scoreVisible(){
   const data = window.graph?.getData ? window.graph.getData() : { nodes:[], links:[] };
   const vs = (data.nodes||[]).map(n=>({ type:'address', id:norm(n.id), network:getNetwork() }));
@@ -193,14 +258,14 @@ function scoreVisible(){
   if (items.length) post('SCORE_BATCH',{ items }).catch(()=>{});
 }
 
-/* ======= graph plumbing ======= */
+/* ----------- graph helpers ----------- */
 function setGraphData({nodes,links}){ window.__VISION_NODES__=nodes||[]; window.__VISION_LINKS__=links||[]; window.__SHOW_LABELS_BELOW__=RXL_FLAGS.labelThreshold; window.graph?.setData({ nodes:window.__VISION_NODES__, links:window.__VISION_LINKS__ }); }
 function toggleLabelsByCount(){ const count=(window.graph?.getData()?.nodes||[]).length; window.graph?.setLabelVisibility(count <= RXL_FLAGS.labelThreshold); }
 
-/* ======= seed ======= */
+/* ----------- seed ----------- */
 function seedDemo(){ const seed='0xdemoseed00000000000000000000000000000001'; setGraphData({ nodes:[{ id:seed, address:seed, network:getNetwork() }], links:[] }); setSelected(seed); }
 
-/* ======= meter / visuals / narrative ======= */
+/* ----------- meter / visuals / narrative ----------- */
 const FACTOR_WEIGHTS = { 'OFAC':40,'OFAC/sanctions list match':40,'sanctioned Counterparty':40,'fan In High':9,'shortest Path To Sanctioned':6,'burst Anomaly':0,'known Mixer Proximity':0 };
 const scorePanel = (window.ScoreMeter && window.ScoreMeter('#scorePanel')) || { setSummary(){}, setScore(){}, setBlocked(){}, setReasons(){}, getScore(){ return 0; } };
 function computeBreakdownFrom(res){ if(Array.isArray(res.breakdown)&&res.breakdown.length) return res.breakdown; const src=res.reasons||res.risk_factors||[]; if(!Array.isArray(src)||!src.length) return []; const list=src.map(l=>({label:String(l),delta:FACTOR_WEIGHTS[l]??0})); const has=list.some(x=>/sanction|ofac/i.test(x.label)); if((res.block||res.blocked||res.risk_score===100)&&!has) list.unshift({label:'sanctioned Counterparty',delta:40}); return list.sort((a,b)=>(b.delta||0)-(a.delta||0)); }
