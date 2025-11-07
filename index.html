@@ -26,10 +26,10 @@
 
   <main class="layout">
     <section class="left">
+      <!-- Graph panel -->
       <div class="panel">
         <h3 class="panel-title">Graph</h3>
 
-        <!-- Graph canvas + controls/status get injected inside -->
         <div id="graph" class="graph-canvas" aria-label="Network graph"></div>
 
         <div class="panel-row">
@@ -38,6 +38,70 @@
           <button id="clearBtn" class="btn btn-ghost">Clear</button>
         </div>
       </div>
+
+      <!-- Control Panel -->
+      <div class="panel">
+        <h3 class="panel-title">Controls</h3>
+
+        <div class="meta" style="margin-bottom:6px;">Toggle features and rendering behavior.</div>
+
+        <div class="panel-row" style="flex-wrap:wrap; gap:10px;">
+          <label style="display:flex;gap:6px;align-items:center;">
+            <input type="checkbox" id="ctlNarrative" checked/>
+            <span>Narrative</span>
+          </label>
+          <label style="display:flex;gap:6px;align-items:center;">
+            <input type="checkbox" id="ctlLabels" checked/>
+            <span>Labels</span>
+          </label>
+          <label style="display:flex;gap:6px;align-items:center;">
+            <input type="checkbox" id="ctlTooltips" checked/>
+            <span>Tooltips</span>
+          </label>
+          <label style="display:flex;gap:6px;align-items:center;">
+            <input type="checkbox" id="ctlHeatmap"/>
+            <span>Heatmap (if supported)</span>
+          </label>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="panel-row" style="flex-wrap:wrap; gap:10px;">
+          <label style="display:flex;gap:6px;align-items:center;">
+            <input type="checkbox" id="ctlFlagCustodian" checked/>
+            <span>Show Custodians</span>
+          </label>
+          <label style="display:flex;gap:6px;align-items:center;">
+            <input type="checkbox" id="ctlFlagCluster" checked/>
+            <span>Highlight High-Risk Clusters</span>
+          </label>
+          <label style="display:flex;gap:6px;align-items:center;">
+            <input type="checkbox" id="ctlFlagDormant" checked/>
+            <span>Highlight Dormant</span>
+          </label>
+          <label style="display:flex;gap:6px;align-items:center;">
+            <input type="checkbox" id="ctlFlagMixer" checked/>
+            <span>Show Mixer Proximity</span>
+          </label>
+          <label style="display:flex;gap:6px;align-items:center;">
+            <input type="checkbox" id="ctlFlagPlatform" checked/>
+            <span>Show Platform Entities</span>
+          </label>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="panel-row" style="gap:10px;flex-wrap:wrap;">
+          <label class="muted">Label threshold</label>
+          <input id="ctlLabelThresh" class="input" type="number" min="20" max="1000" value="150" style="width:110px;"/>
+
+          <label class="muted">Neighbor cap</label>
+          <input id="ctlNeighborCap" class="input" type="number" min="40" max="1000" value="120" style="width:110px;"/>
+
+          <button id="ctlApply" class="btn">Apply</button>
+        </div>
+      </div>
+
       <!-- Tooltip host -->
       <div id="rxlTooltip" style="position:fixed;display:none;background:#0c1820;border:1px solid #1a2a33;border-radius:8px;padding:8px 10px;font-size:12px;z-index:10;pointer-events:none;"></div>
     </section>
@@ -45,6 +109,7 @@
     <section class="right">
       <div class="panel">
         <h3 class="panel-title">Details</h3>
+
         <div id="scorePanel" class="score-panel">
           <div class="meter">
             <svg viewBox="0 0 100 100" class="ring">
@@ -58,6 +123,7 @@
           </div>
           <div class="reasons"></div>
         </div>
+
         <div id="entityMeta" class="meta"></div>
       </div>
 
